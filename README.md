@@ -9,4 +9,4 @@ translated Windows headers (`w`), the dear_bindings ImGui C API (`im`) and a nam
   `exe_mod.addImport("kit", kit.module("kit"));` (full example: docs/ZIG-0.17-NOTES.md, section K0).
 - Build: `zig build` (lib), `zig build test`, `zig build demo`, `zig build run-demo` (Zig at `%LOCALAPPDATA%\Programs\zig\0.17.1`).
 - Smoke test: `powershell -ExecutionPolicy Bypass -File tools\smoke.ps1` (opens the demo on `\\.\DISPLAY1`, prints `SMOKE OK`).
-- Read docs/ZIG-0.17-NOTES.md before writing code: verified Zig 0.17 idioms + kit usage. Versions: third_party/imgui/VERSION.
+- Read docs/ZIG-0.17-NOTES.md before writing code: verified Zig 0.17 idioms + kit usage. Versions: third_party/VERSION-imgui.txt.
