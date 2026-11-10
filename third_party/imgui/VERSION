@@ -1,0 +1,29 @@
+Vendored sources (unmodified copies; offline builds). Fetched 2026-11-10.
+
+Dear ImGui v1.93.0, docking branch
+  tag:    v1.93.0-docking  (commit b916186e66aa3c02b72c6ca17455516512ed8049)
+  from:   https://github.com/ocornut/imgui/archive/refs/tags/v1.93.0-docking.tar.gz
+          sha256 746c265540bd3aa109570f29492ef4d8f5b421dd9fd0049c35ca35f21496f1a5
+  files:  third_party/imgui/{imgui.cpp, imgui.h, imgui_internal.h, imgui_draw.cpp, imgui_tables.cpp,
+          imgui_widgets.cpp, imgui_demo.cpp, imconfig.h, imstb_rectpack.h, imstb_textedit.h,
+          imstb_truetype.h, LICENSE.txt}
+          third_party/imgui/backends/{imgui_impl_win32.cpp/.h, imgui_impl_dx11.cpp/.h}
+  config: src/c/makekit_imconfig.h via -DIMGUI_USER_CONFIG (IMGUI_DISABLE_OBSOLETE_FUNCTIONS,
+          IMGUI_ENABLE_TEST_ENGINE, IMGUI_IMPL_WIN32_DISABLE_GAMEPAD, IM_ASSERT -> mk_imgui_assert)
+
+dear_bindings v0.27 (C API "dcimgui"), generated upstream for exactly ImGui v1.93.0-docking
+  release: DearBindings_v0.27_ImGui_v1.93.0-docking (published 2026-10-31)
+  from:   https://github.com/dearimgui/dear_bindings/releases/download/DearBindings_v0.27_ImGui_v1.93.0-docking/DearBindings_v0.27_ImGui_v1.93.0-docking.zip
+          sha256 d12afaa7bc319f43710d1d24fc60094dd0d450e8b49a57794921419f9c4d92b4
+  files:  third_party/dear_bindings/{dcimgui.h, dcimgui.cpp, LICENSE.txt}
+          third_party/dear_bindings/backends/{dcimgui_impl_win32.cpp/.h, dcimgui_impl_dx11.cpp/.h}
+  (the release assets matched the ImGui version, so dear_bindings was not run locally)
+
+translate-c 2.0.2 (official ZSF package, replaces @cImport) - not vendored, pinned in build.zig.zon:
+  git+https://codeberg.org/ziglang/translate-c?ref=2.0.2#c11030012dc325d446474d17b78c242fd1d622ec
+  (pulls arocc zig-0.17.x 630d99ed60fe61ccabe721f1af60881f8b2adde3); cached in zig-pkg/ and the global zig cache.
+
+Upgrading: replace the files above with the new tag's copies, take the dear_bindings release built for
+that exact tag (or run dear_bindings with py -3.12), update this file, run `zig build test` and
+`tools\smoke.ps1`. te_hooks.cpp must match the "[SECTION] Test Engine specific hooks" signatures in
+imgui_internal.h.
