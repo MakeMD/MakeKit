@@ -1,7 +1,9 @@
-//! Small reusable widgets: tri-state checkbox, modal message box, progress strip, icon buttons.
+//! Small reusable widgets: compact / tri-state checkbox, automation-readable text, modal message box,
+//! progress strip, icon buttons.
 const std = @import("std");
 const im = @import("im");
 const app = @import("app.zig");
+const automation = @import("automation.zig");
 
 /// Segoe Fluent Icons / Segoe MDL2 Assets code points (same in both fonts).
 pub const icons = struct {
@@ -37,29 +39,57 @@ pub fn glyph(cp: u21) [4:0]u8 {
     return out;
 }
 
-// ---------------------------------------------------------------- tri-state checkbox
+// ---------------------------------------------------------------- checkboxes
+
+/// ImGui checkbox with a compact box (~20 px, not button-tall). Returns true when the user changed it.
+pub fn checkbox(label: [*:0]const u8, v: *bool) bool {
+    const pad = im.ImGui_GetStyle().*.FramePadding;
+    im.ImGui_PushStyleVarImVec2(im.ImGuiStyleVar_FramePadding, .{ .x = pad.x, .y = @max(1, pad.y * 0.35) });
+    defer im.ImGui_PopStyleVar();
+    return im.ImGui_Checkbox(label, v);
+}
 
 pub const Tri = enum { off, on, mixed };
 
-/// Checkbox with an indeterminate ("mixed") state. Clicking mixed/off -> on, on -> off.
-/// Returns true when the user changed it.
+/// `checkbox` with an indeterminate ("mixed", automation item `mixed: true`) state. Clicking mixed/off -> on,
+/// on -> off. Returns true when the user changed it.
 pub fn triCheckbox(label: [*:0]const u8, state: *Tri) bool {
     var b = state.* == .on;
     const mixed = state.* == .mixed;
     if (mixed) im.ImGui_PushItemFlag(im.ImGuiItemFlags_MixedValue, true);
-    // Box size = frame height; use a compact vertical padding so it is ~20 px, not button-tall.
-    const pad = im.ImGui_GetStyle().*.FramePadding;
-    im.ImGui_PushStyleVarImVec2(im.ImGuiStyleVar_FramePadding, .{ .x = pad.x, .y = @max(1, pad.y * 0.35) });
-    const changed = im.ImGui_Checkbox(label, &b);
-    im.ImGui_PopStyleVar();
+    const changed = checkbox(label, &b);
     if (mixed) im.ImGui_PopItemFlag();
     if (changed) state.* = if (b) .on else .off;
     return changed;
 }
 
+// ---------------------------------------------------------------- automation-readable text
+
+/// TextUnformatted that automation can read: item "<text>##<id>" with `value` = the full text (plain text
+/// is no item). `color` 0xRRGGBB (null = theme text); `wrap_w` > 0 wraps at that many px.
+pub fn text(id: []const u8, s: []const u8, color: ?u32, wrap_w: f32) void {
+    if (color) |c| im.ImGui_PushStyleColorImVec4(im.ImGuiCol_Text, app.color(c, 1));
+    if (wrap_w > 0) im.ImGui_PushTextWrapPos(im.ImGui_GetCursorPosX() + wrap_w);
+    im.ImGui_TextUnformattedEx(s.ptr, s.ptr + s.len);
+    if (wrap_w > 0) im.ImGui_PopTextWrapPos();
+    if (color != null) im.ImGui_PopStyleColor();
+    if (!automation.active) return;
+    var buf: [512]u8 = undefined;
+    // ponytail: a long text is cut in the label (at a UTF-8 boundary); `value` keeps all of it
+    var n = @min(s.len, buf.len -| (id.len + 3));
+    while (n > 0 and n < s.len and s[n] & 0xC0 == 0x80) n -= 1;
+    const label = std.mem.printSentinel(&buf, "{s}##{s}", .{ s[0..n], id }, 0) catch return; // id > 500 bytes
+    automation.tagLastItem(label.ptr, s);
+}
+
 // ---------------------------------------------------------------- modal message box
 
 pub const MsgKind = enum { info, warning, err, question };
+
+pub const MsgOptions = struct {
+    /// Text wrap width in logical px (the box grows to fit it).
+    width: f32 = 480,
+};
 
 /// Opens the message box `id` (call once, e.g. on a button press; not every frame).
 pub fn openMessage(id: [*:0]const u8) void {
@@ -69,11 +99,16 @@ pub fn openMessage(id: [*:0]const u8) void {
 /// Draws the modal `id` if it is open. Returns the index of the clicked button once
 /// (Enter = button 0, Esc = last button), null otherwise. `id` is the window title
 /// ("Delete files?##confirm"). `buttons` are labels ("Delete", "Cancel").
-pub fn messageBox(id: [*:0]const u8, kind: MsgKind, text: []const u8, buttons: []const [*:0]const u8) ?usize {
+/// Automation: text `<text>##msgText`, buttons `<label>##msgButton<i>`.
+pub fn messageBox(id: [*:0]const u8, kind: MsgKind, msg: []const u8, buttons: []const [*:0]const u8) ?usize {
+    return messageBoxEx(id, kind, msg, buttons, .{});
+}
+
+pub fn messageBoxEx(id: [*:0]const u8, kind: MsgKind, msg: []const u8, buttons: []const [*:0]const u8, opt: MsgOptions) ?usize {
     const s = if (app.current()) |a| a.scale() else 1.0;
     const vp = im.ImGui_GetMainViewport();
     im.ImGui_SetNextWindowPosEx(im.ImGuiViewport_GetCenter(vp), im.ImGuiCond_Appearing, .{ .x = 0.5, .y = 0.5 });
-    im.ImGui_SetNextWindowSizeConstraints(.{ .x = 340 * s, .y = 0 }, .{ .x = 640 * s, .y = 10000 }, null, null);
+    im.ImGui_SetNextWindowSizeConstraints(.{ .x = 340 * s, .y = 0 }, .{ .x = (opt.width + 160) * s, .y = 10000 }, null, null);
     if (!im.ImGui_BeginPopupModal(id, null, im.ImGuiWindowFlags_AlwaysAutoResize | im.ImGuiWindowFlags_NoSavedSettings)) return null;
     defer im.ImGui_EndPopup();
 
@@ -91,23 +126,23 @@ pub fn messageBox(id: [*:0]const u8, kind: MsgKind, text: []const u8, buttons: [
     im.ImGui_PopStyleColor();
     im.ImGui_PopFont();
     im.ImGui_SameLineEx(0, 14 * s);
-    im.ImGui_PushTextWrapPos(im.ImGui_GetCursorPosX() + 480 * s);
-    im.ImGui_TextUnformattedEx(text.ptr, text.ptr + text.len);
-    im.ImGui_PopTextWrapPos();
+    text("msgText", msg, null, opt.width * s);
     im.ImGui_Dummy(.{ .x = 0, .y = 6 * s });
 
     // Right-aligned button row.
     const style = im.ImGui_GetStyle();
     const min_w = 88 * s;
     var row_w: f32 = 0;
-    for (buttons) |b| row_w += @max(min_w, im.ImGui_CalcTextSize(b).x + style.*.FramePadding.x * 2) + style.*.ItemSpacing.x;
+    for (buttons) |b| row_w += buttonWidth(b, min_w) + style.*.ItemSpacing.x;
     row_w -= style.*.ItemSpacing.x;
     const avail = im.ImGui_GetContentRegionAvail().x;
     if (avail > row_w) im.ImGui_SetCursorPosX(im.ImGui_GetCursorPosX() + avail - row_w);
     var result: ?usize = null;
     for (buttons, 0..) |b, i| {
         if (i > 0) im.ImGui_SameLine();
-        if (im.ImGui_ButtonEx(b, .{ .x = @max(min_w, im.ImGui_CalcTextSize(b).x + style.*.FramePadding.x * 2), .y = 0 })) result = i;
+        var lb: [256]u8 = undefined;
+        const label = std.mem.printSentinel(&lb, "{s}##msgButton{d}", .{ std.mem.span(b), i }, 0) catch std.mem.span(b);
+        if (im.ImGui_ButtonEx(label.ptr, .{ .x = buttonWidth(b, min_w), .y = 0 })) result = i;
         if (i == 0) im.ImGui_SetItemDefaultFocus();
     }
     if (result == null and buttons.len > 0 and !im.ImGui_IsWindowAppearing()) {
@@ -118,33 +153,37 @@ pub fn messageBox(id: [*:0]const u8, kind: MsgKind, text: []const u8, buttons: [
     return result;
 }
 
+fn buttonWidth(label: [*:0]const u8, min_w: f32) f32 {
+    return @max(min_w, im.ImGui_CalcTextSizeEx(label, null, true, -1).x + im.ImGui_GetStyle().*.FramePadding.x * 2);
+}
+
 // ---------------------------------------------------------------- progress strip
 
 /// Status line, then [bar] "NN% (x of y)" [Cancel]. `total == 0` draws an indeterminate bar
 /// (call `app.animate(true)` while it is shown). Returns true when Cancel was clicked.
-/// The Cancel button label is "Cancel##<id>" (for automation: `click Cancel##<id>`).
+/// Automation: `<status>##status`, `<NN% (x of y)>##percent`, `Cancel##cancel` (ImGui ids scoped by `id`).
 pub fn progressStrip(id: []const u8, status: []const u8, done: u64, total: u64, can_cancel: bool) bool {
+    im.ImGui_PushIDStr(id.ptr, id.ptr + id.len);
+    defer im.ImGui_PopID();
     var buf: [128]u8 = undefined;
-    im.ImGui_TextUnformattedEx(status.ptr, status.ptr + status.len);
+    text("status", status, null, 0);
     const pct: u64 = if (total == 0) 0 else @min(100, done * 100 / total);
     const label = (if (total == 0)
-        std.mem.printSentinel(&buf, "{d}", .{done}, 0)
+        std.mem.print(&buf, "{d}", .{done})
     else
-        std.mem.printSentinel(&buf, "{d}% ({d} of {d})", .{ pct, done, total }, 0)) catch return false;
+        std.mem.print(&buf, "{d}% ({d} of {d})", .{ pct, done, total })) catch return false;
     const style = im.ImGui_GetStyle();
-    var cancel_buf: [96]u8 = undefined;
-    const cancel_label = std.mem.printSentinel(&cancel_buf, "Cancel##{s}", .{id}, 0) catch return false;
-    const label_w = im.ImGui_CalcTextSize(label.ptr).x;
+    const label_w = im.ImGui_CalcTextSizeEx(label.ptr, label.ptr + label.len, false, -1).x;
     const cancel_w = if (can_cancel) im.ImGui_CalcTextSize("Cancel").x + style.*.FramePadding.x * 2 + style.*.ItemSpacing.x else 0;
     const bar_w = @max(40, im.ImGui_GetContentRegionAvail().x - label_w - style.*.ItemSpacing.x - cancel_w);
     const frac: f32 = if (total == 0) @floatCast(-im.ImGui_GetTime()) else @as(f32, @floatFromInt(done)) / @as(f32, @floatFromInt(total));
     im.ImGui_ProgressBar(frac, .{ .x = bar_w, .y = 0 }, "");
     im.ImGui_SameLine();
     im.ImGui_AlignTextToFramePadding();
-    im.ImGui_TextUnformatted(label.ptr);
+    text("percent", label, null, 0);
     if (!can_cancel) return false;
     im.ImGui_SameLine();
-    return im.ImGui_Button(cancel_label.ptr);
+    return im.ImGui_Button("Cancel##cancel");
 }
 
 // ---------------------------------------------------------------- icon buttons
@@ -155,11 +194,11 @@ pub fn iconButton(icon: u21, label: []const u8, tooltip: ?[*:0]const u8) bool {
     var buf: [256]u8 = undefined;
     const g = glyph(icon);
     const gs = std.mem.sliceTo(&g, 0);
-    const text = (if (label.len == 0 or std.mem.startsWith(u8, label, "##"))
+    const lbl = (if (label.len == 0 or std.mem.startsWith(u8, label, "##"))
         std.mem.printSentinel(&buf, "{s}{s}", .{ gs, label }, 0)
     else
         std.mem.printSentinel(&buf, "{s}  {s}", .{ gs, label }, 0)) catch return false;
-    const pressed = im.ImGui_Button(text.ptr);
+    const pressed = im.ImGui_Button(lbl.ptr);
     if (tooltip) |t| if (im.ImGui_IsItemHovered(im.ImGuiHoveredFlags_ForTooltip)) im.ImGui_SetTooltip("%s", t);
     return pressed;
 }

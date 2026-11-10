@@ -12,6 +12,8 @@ const State = struct {
     temp: ui.Tri = .on,
     all: ui.Tri = .mixed,
     name: [128:0]u8 = @splat(0),
+    verbose: bool = false,
+    level: usize = 1,
     selected_row: usize = 0,
     job: kit.jobs.Job = .{},
     job_done: bool = false,
@@ -76,7 +78,7 @@ fn frame(app: *App) void {
     im.ImGui_TextUnformatted(icons_line);
     var dpi_buf: [96]u8 = undefined;
     const dpi_text = std.mem.printSentinel(&dpi_buf, "DPI {d} ({d:.2}x){s}", .{ app.dpi, sc, if (app.warp) ", WARP" else "" }, 0) catch unreachable;
-    im.ImGui_TextDisabled("%s", dpi_text.ptr);
+    ui.text("dpi", dpi_text, app.cfg.palette.muted, 0);
     im.ImGui_Separator();
 
     // Tri-state checkboxes: "All" follows its children.
@@ -93,6 +95,30 @@ fn frame(app: *App) void {
     if (any_change) {
         const on = @as(u8, @intFromBool(s.docs == .on)) + @intFromBool(s.pics == .on) + @intFromBool(s.temp == .on);
         s.all = if (on == 3) .on else if (on == 0) .off else .mixed;
+    }
+
+    // Plain ImGui tab bar + combo: automation sees tab labels (selected = shown tab) and the combo preview.
+    if (im.ImGui_BeginTabBar("tabs", 0)) {
+        if (im.ImGui_BeginTabItem("Options##tabOptions", null, 0)) {
+            _ = ui.checkbox("Verbose log##verbose", &s.verbose);
+            im.ImGui_SameLine();
+            const levels = [_][*:0]const u8{ "Fast", "Normal", "Ultra" };
+            im.ImGui_SetNextItemWidth(160 * sc);
+            if (im.ImGui_BeginCombo("Level##lvl", levels[s.level], 0)) {
+                for (levels, 0..) |l, i| {
+                    im.ImGui_PushIDInt(@intCast(i));
+                    if (im.ImGui_SelectableEx(l, i == s.level, 0, .{ .x = 0, .y = 0 })) s.level = i;
+                    im.ImGui_PopID();
+                }
+                im.ImGui_EndCombo();
+            }
+            im.ImGui_EndTabItem();
+        }
+        if (im.ImGui_BeginTabItem("About##tabAbout", null, 0)) {
+            ui.text("about", "MakeKit: Zig 0.17 + Dear ImGui 1.93 on Win32/D3D11.", null, 0);
+            im.ImGui_EndTabItem();
+        }
+        im.ImGui_EndTabBar();
     }
 
     // Table.
@@ -127,10 +153,7 @@ fn frame(app: *App) void {
         var sb: [256]u8 = undefined;
         if (ui.progressStrip("job", s.job.status(&sb), s.job.done.load(.acquire), s.job.total.load(.acquire), true)) s.job.cancel();
     } else {
-        if (s.job.isFinished() and s.job.thread != null) {
-            s.job.join();
-            s.job_done = true;
-        }
+        if (s.job.takeFinished()) s.job_done = true;
         if (ui.iconButton(ui.icons.refresh, "Start job##job", "Runs a 1.2 s fake job")) {
             s.job_done = false;
             s.job.start(s, worker) catch |e| s.setInfo("start failed: {t}", .{e});
@@ -146,6 +169,8 @@ fn frame(app: *App) void {
     // Modal dialog.
     im.ImGui_SeparatorText("Dialogs & shell");
     if (ui.iconButton(ui.icons.warning, "Show dialog##msg", null)) ui.openMessage("Delete files?##dlg");
+    im.ImGui_SameLine();
+    if (im.ImGui_Button("Delete##pageDelete")) s.setInfo("page Delete clicked", .{}); // same text as the dialog button
     if (ui.messageBox("Delete files?##dlg", .warning, "Delete 3 selected items? Їх можна відновити з Кошика.", &.{ "Delete", "Cancel" })) |r| s.dialog_result = r;
     if (s.dialog_result) |r| {
         im.ImGui_SameLine();
@@ -181,16 +206,14 @@ fn frame(app: *App) void {
 
     im.ImGui_Spacing();
     im.ImGui_TextDisabled("Drop files onto the window to see their paths.");
-    if (s.info_len > 0) {
-        im.ImGui_TextUnformattedEx(&s.info, @as([*]const u8, &s.info) + s.info_len);
-    }
+    if (s.info_len > 0) ui.text("info", s.info[0..s.info_len], null, im.ImGui_GetContentRegionAvail().x);
 
     // Close veto while the job runs.
     if (s.quit_asked) {
         s.quit_asked = false;
         ui.openMessage("Quit?##quit");
     }
-    if (ui.messageBox("Quit?##quit", .question, "A job is still running. Quit anyway?", &.{ "Quit", "Keep running" })) |r| {
+    if (ui.messageBoxEx("Quit?##quit", .question, "A job is still running. Quit anyway?", &.{ "Quit", "Keep running" }, .{ .width = 300 })) |r| {
         if (r == 0) {
             s.job.cancel();
             app.quit();

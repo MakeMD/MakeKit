@@ -1,10 +1,13 @@
 //! Test automation over a named pipe (replaces UIA: ImGui has no accessibility tree).
 //! Enabled with env MAKEKIT_AUTOMATION=1. Pipe: \\.\pipe\makekit-auto-<pid>, one request line in,
 //! one JSON line out. Commands run on the UI thread between frames:
-//!   list | click <label> | dblclick <label> | rclick <label> | hover <label> | type <text>
+//!   list | click <label> [@x] | dblclick <label> [@x] | rclick <label> [@x] | hover <label> [@x] | type <text>
 //!   key <[ctrl+][shift+][alt+]Name> | wait <label> [timeout_ms] | frames <n> | screenshot <path.bmp> | quit
-//! <label> matching: exact full label ("Start##job"), else a label ending with the given "##id",
-//! else substring; >1 distinct match (after preferring visible items) = error "ambiguous".
+//! <label> matching: exact full label ("Start##job"), else the visible text ("Start" = the label up to
+//! "##"), else a label ending with the given "##id", else substring; >1 distinct match (after preferring
+//! visible items) = error "ambiguous". `@x` moves the click off the item centre: `@12` = 12 px from the
+//! left edge, `@-12` = from the right edge, `@75%` = at 75 % of the width (e.g. one column of a
+//! SpanAllColumns row); y stays centred.
 //! Real mouse/keyboard/focus messages are filtered out in app.zig's WndProc while active.
 const std = @import("std");
 const im = @import("im");
@@ -25,6 +28,7 @@ const MkteItem = extern struct {
     label: c_int,
     window: c_int,
     visible: c_int,
+    value: c_int,
 };
 const MkteWindow = extern struct {
     name: [*:0]const u8,
@@ -40,6 +44,8 @@ extern fn mkte_items() ?[*]const MkteItem;
 extern fn mkte_pool() ?[*]const u8;
 extern fn mkte_window_count() c_int;
 extern fn mkte_windows() ?[*]const MkteWindow;
+extern fn mkte_enable() void;
+extern fn mkte_tag(id: im.ImGuiID, label: ?[*:0]const u8, value: ?[*]const u8, value_len: c_int, status: c_int, add: c_int) void;
 
 // ImGuiItemStatusFlags test-engine bits (imgui_internal.h, IMGUI_ENABLE_TEST_ENGINE)
 const ST_EDITED = 1 << 2;
@@ -48,6 +54,7 @@ const ST_OPENED = 1 << 21;
 const ST_CHECKABLE = 1 << 22;
 const ST_CHECKED = 1 << 23;
 const ST_INPUTABLE = 1 << 24;
+const ST_SELECTED = 1 << 30; // te_hooks.cpp MKTE_SELECTED
 
 // ---------------------------------------------------------------- pipe thread <-> UI thread
 
@@ -74,6 +81,7 @@ pub fn start(app: *App) !void {
     reply_event = w.CreateEventW(null, 0, 0, null);
     written_event = w.CreateEventW(null, 0, 0, null);
     if (reply_event == null or written_event == null) return error.Unexpected;
+    mkte_enable(); // ponytail: items are recorded only under automation, no per-item cost otherwise
     const t = try std.Thread.spawn(.{}, pipeThread, .{});
     t.detach(); // ponytail: blocks in ConnectNamedPipe/ReadFile; dies with the process
     active = true;
@@ -86,6 +94,16 @@ pub fn stop() void {
     if (cur != null) finish(gpa.dupe(u8, "{\"ok\":true,\"exiting\":true}") catch unreachable);
     if (unwritten.load(.acquire)) _ = w.WaitForSingleObject(written_event, 1000);
     active = false;
+}
+
+/// Reports the last submitted item to automation as `label`, with `value` as its readable text. Makes
+/// items ImGui does not report findable (TextUnformatted, custom drawing over a Dummy). Like ImGui's own
+/// labels it only counts while the item is visible. No-op unless automation is on.
+pub fn tagLastItem(label: [*:0]const u8, value: ?[]const u8) void {
+    if (!active) return;
+    const id = im.ImGui_GetItemID();
+    const v = value orelse "";
+    mkte_tag(if (id != 0) id else im.ImGui_GetID(label), label, if (value != null) v.ptr else null, @intCast(v.len), 0, 1);
 }
 
 /// True while a command is queued or running (the main loop keeps rendering).
@@ -242,10 +260,16 @@ fn begin(app: *App, line: []u8) void {
             app.quit();
         },
         .click, .dblclick, .rclick, .hover => {
+            var at: ?[]const u8 = null;
+            if (std.mem.findLast(u8, c.q, " @")) |i| {
+                at = c.q[i + 2 ..];
+                c.q = std.mem.trimEnd(u8, c.q[0..i], " ");
+            }
             const it = findItem(c.q) catch |e| return failFind(e, c.q);
             if (it.visible == 0) return fail("item '{s}' is not visible", .{c.q});
             if (kind != .hover and it.item_flags & im.ImGuiItemFlags_Disabled != 0) return fail("item '{s}' is disabled", .{c.q});
             c.pos = .{ .x = (it.x0 + it.x1) / 2, .y = (it.y0 + it.y1) / 2 };
+            if (at) |a| c.pos.x = offsetX(it, a) orelse return fail("bad offset '@{s}' (use @12, @-12 or @75%)", .{a});
         },
         .key => parseKey(c) catch return fail("bad key chord '{s}'", .{c.arg}),
         .wait => {
@@ -325,6 +349,16 @@ fn stepCmd(app: *App) void {
     }
 }
 
+/// `@x` of click/hover: "12" px from the left edge, "-12" from the right, "75%" of the width.
+fn offsetX(it: MkteItem, a: []const u8) ?f32 {
+    if (std.mem.endsWith(u8, a, "%")) {
+        const pct = std.fmt.parseFloat(f32, a[0 .. a.len - 1]) catch return null;
+        return it.x0 + (it.x1 - it.x0) * pct / 100;
+    }
+    const px = std.fmt.parseFloat(f32, a) catch return null;
+    return if (a[0] == '-') it.x1 + px else it.x0 + px;
+}
+
 fn parseKey(c: *Cmd) !void {
     var it = std.mem.splitScalar(u8, c.arg, '+');
     var last: []const u8 = "";
@@ -351,19 +385,6 @@ fn parseKey(c: *Cmd) !void {
 
 // ---------------------------------------------------------------- item lookup / JSON
 
-const Item = struct {
-    id: u32,
-    label: []const u8,
-    window: []const u8,
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-    status: c_int,
-    item_flags: c_int,
-    visible: c_int,
-};
-
 fn items() []const MkteItem {
     const n: usize = @intCast(mkte_item_count());
     return if (mkte_items()) |p| p[0..n] else &.{};
@@ -375,33 +396,45 @@ fn poolStr(off: c_int) []const u8 {
     return std.mem.span(@as([*:0]const u8, @ptrCast(p + @as(usize, @intCast(off)))));
 }
 
-fn toItem(r: MkteItem) Item {
-    return .{ .id = r.id, .label = poolStr(r.label), .window = poolStr(r.window), .x0 = r.x0, .y0 = r.y0, .x1 = r.x1, .y1 = r.y1, .status = r.status, .item_flags = r.item_flags, .visible = r.visible };
-}
-
 const FindError = error{ NotFound, Ambiguous };
 
-fn findItem(q: []const u8) FindError!Item {
+/// Root window that has keyboard focus (an open modal, when there is one); "" when none.
+fn focusedWindow() []const u8 {
+    const n: usize = @intCast(mkte_window_count());
+    if (mkte_windows()) |ws| for (ws[0..n]) |win_| {
+        if (win_.focused != 0) return std.mem.span(win_.name);
+    };
+    return "";
+}
+
+/// Ties between several matches go to the only visible one, else to the only visible one in the focused
+/// window (e.g. "Delete" in an open message box over a page that has a "Delete##x" button too).
+fn findItem(q: []const u8) FindError!MkteItem {
     const all = items();
-    const Stage = enum { exact, id_suffix, substring };
-    for ([_]Stage{ .exact, .id_suffix, .substring }) |stage| {
+    const focused = focusedWindow();
+    const Stage = enum { exact, text, id_suffix, substring };
+    for ([_]Stage{ .exact, .text, .id_suffix, .substring }) |stage| {
+        if (stage == .text and std.mem.find(u8, q, "##") != null) continue;
         if (stage == .id_suffix and !std.mem.startsWith(u8, q, "##")) continue;
-        var first: ?Item = null;
-        var first_visible: ?Item = null;
+        var first: ?MkteItem = null;
+        var first_visible: ?MkteItem = null;
         var distinct: usize = 0;
         var distinct_visible: usize = 0;
-        for (all, 0..) |r, i| {
-            const it = toItem(r);
-            if (it.label.len == 0) continue;
+        var first_focused: ?MkteItem = null;
+        var distinct_focused: usize = 0;
+        for (all, 0..) |it, i| {
+            const label = poolStr(it.label);
+            if (label.len == 0) continue;
             const hit = switch (stage) {
-                .exact => std.mem.eql(u8, it.label, q),
-                .id_suffix => std.mem.endsWith(u8, it.label, q),
-                .substring => std.mem.find(u8, it.label, q) != null,
+                .exact => std.mem.eql(u8, label, q),
+                .text => std.mem.eql(u8, label[0 .. std.mem.find(u8, label, "##") orelse label.len], q),
+                .id_suffix => std.mem.endsWith(u8, label, q),
+                .substring => std.mem.find(u8, label, q) != null,
             };
             if (!hit) continue;
             // count distinct ids (an item can be registered twice in one frame)
             const dup = for (all[0..i]) |prev| {
-                if (prev.id == r.id and prev.label >= 0 and std.mem.eql(u8, poolStr(prev.label), it.label)) break true;
+                if (prev.id == it.id and prev.label >= 0 and std.mem.eql(u8, poolStr(prev.label), label)) break true;
             } else false;
             if (dup) continue;
             distinct += 1;
@@ -409,11 +442,16 @@ fn findItem(q: []const u8) FindError!Item {
             if (it.visible != 0) {
                 distinct_visible += 1;
                 if (first_visible == null) first_visible = it;
+                if (std.mem.eql(u8, poolStr(it.window), focused)) {
+                    distinct_focused += 1;
+                    if (first_focused == null) first_focused = it;
+                }
             }
         }
         if (distinct == 1) return first.?;
         if (distinct > 1) {
             if (distinct_visible == 1) return first_visible.?;
+            if (distinct_focused == 1) return first_focused.?;
             return error.Ambiguous;
         }
     }
@@ -443,13 +481,19 @@ const ItemJson = struct {
     opened: bool,
     inputable: bool,
     edited: bool,
+    /// Selected Selectable row / the tab whose content is shown.
+    selected: bool,
+    /// Drawn with ImGuiItemFlags_MixedValue (kit.ui.triCheckbox in state .mixed).
+    mixed: bool,
+    /// Readable text: InputText* buffer (not passwords), combo preview, kit.ui.text; null when none.
+    value: ?[]const u8,
 };
 
-fn itemJson(it: Item) ItemJson {
+fn itemJson(it: MkteItem) ItemJson {
     return .{
         .id = it.id,
-        .label = it.label,
-        .window = it.window,
+        .label = poolStr(it.label),
+        .window = poolStr(it.window),
         .x0 = it.x0,
         .y0 = it.y0,
         .x1 = it.x1,
@@ -462,10 +506,13 @@ fn itemJson(it: Item) ItemJson {
         .opened = it.status & ST_OPENED != 0,
         .inputable = it.status & ST_INPUTABLE != 0,
         .edited = it.status & ST_EDITED != 0,
+        .selected = it.status & ST_SELECTED != 0,
+        .mixed = it.item_flags & im.ImGuiItemFlags_MixedValue != 0,
+        .value = if (it.value >= 0) poolStr(it.value) else null,
     };
 }
 
-fn itemJsonAlloc(it: Item) ![]u8 {
+fn itemJsonAlloc(it: MkteItem) ![]u8 {
     return std.json.Stringify.valueAlloc(gpa, .{ .ok = true, .item = itemJson(it) }, .{});
 }
 
@@ -480,7 +527,7 @@ fn listJson() ![]u8 {
     var n: usize = 0;
     for (all) |r| {
         if (r.label < 0) continue; // unlabeled internals (scrollbars, resize grips, ...)
-        out[n] = itemJson(toItem(r));
+        out[n] = itemJson(r);
         n += 1;
     }
     const wn: usize = @intCast(mkte_window_count());

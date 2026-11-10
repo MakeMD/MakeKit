@@ -3,8 +3,8 @@
 //!
 //!   var job: kit.jobs.Job = .{};
 //!   try job.start(&state, scanWorker);          // fn scanWorker(job: *Job) anyerror!void
-//!   // per frame: job.progress(), job.status(&buf), job.isFinished(), job.cancel()
-//!   // when finished: job.join() (frees the thread), job.errorText(&buf)
+//!   // per frame: job.progress(), job.status(&buf), job.cancel(),
+//!   //            if (job.takeFinished()) ... (true once; joins) -> job.errorText(&buf)
 const std = @import("std");
 const w = @import("w");
 const win = @import("win.zig");
@@ -131,9 +131,17 @@ pub const Job = struct {
     }
 
     /// Waits for the worker thread (call after isFinished(), or after cancel() on shutdown).
+    /// isFinished() stays true afterwards; per-frame polling wants takeFinished().
     pub fn join(job: *Job) void {
         if (job.thread) |t| t.join();
         job.thread = null;
+    }
+
+    /// UI, once per frame: true exactly once per run, when the worker has finished; joins it.
+    pub fn takeFinished(job: *Job) bool {
+        if (job.thread == null or !job.isFinished()) return false;
+        job.join();
+        return true;
     }
 
     /// Throttled UI wake: at most one per ~33 ms.
@@ -165,9 +173,10 @@ test "job runs, reports progress, cancels" {
         }
     };
     var job: Job = .{};
+    try std.testing.expect(!job.takeFinished()); // never started
     try job.start(null, Worker.count);
-    while (!job.isFinished()) std.atomic.spinLoopHint();
-    job.join();
+    while (!job.takeFinished()) std.atomic.spinLoopHint();
+    try std.testing.expect(!job.takeFinished()); // only once per run
     try std.testing.expectEqual(@as(f32, 1.0), job.progress());
     var buf: [64]u8 = undefined;
     try std.testing.expectEqualStrings("item 10", job.status(&buf));

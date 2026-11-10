@@ -17,9 +17,7 @@ extern fn cImGui_ImplDX11_Init(device: [*c]w.ID3D11Device, ctx: [*c]w.ID3D11Devi
 extern fn cImGui_ImplDX11_Shutdown() void;
 extern fn cImGui_ImplDX11_NewFrame() void;
 extern fn cImGui_ImplDX11_RenderDrawData(draw_data: *im.ImDrawData) void;
-// src/te_hooks.cpp
-extern fn mkte_enable() void;
-extern fn mkte_end_frame() void;
+extern fn mkte_end_frame() void; // src/te_hooks.cpp
 
 // ---------------------------------------------------------------- theme
 
@@ -198,8 +196,6 @@ pub const Config = struct {
     palette: Palette = palettes.cleaner,
     /// Base font size in logical pixels.
     font_size: f32 = 16,
-    docking: bool = false,
-    viewports: bool = false,
     /// Icon resource id from the app's .rc (`1 ICON "app.ico"` -> 1). null = default icon.
     icon_id: ?u16 = null,
     /// imgui.ini path (UTF-8); null = do not persist ImGui window state.
@@ -277,8 +273,6 @@ pub const App = struct {
         const io = im.ImGui_GetIO();
         io.*.IniFilename = if (cfg.ini_file) |f| f.ptr else null;
         io.*.ConfigFlags |= im.ImGuiConfigFlags_NavEnableKeyboard;
-        if (cfg.docking) io.*.ConfigFlags |= im.ImGuiConfigFlags_DockingEnable;
-        if (cfg.viewports) io.*.ConfigFlags |= im.ImGuiConfigFlags_ViewportsEnable;
         io.*.ConfigWindowsMoveFromTitleBarOnly = true;
 
         const style = im.ImGui_GetStyle();
@@ -290,7 +284,6 @@ pub const App = struct {
 
         _ = cImGui_ImplWin32_Init(app.hwnd);
         _ = cImGui_ImplDX11_Init(app.device, app.context);
-        mkte_enable();
         var f: w.LARGE_INTEGER = undefined;
         _ = w.QueryPerformanceFrequency(&f);
         app.qpc_freq = f.QuadPart;
@@ -384,7 +377,9 @@ pub const App = struct {
         const now = w.GetTickCount64();
         // Low-rate tail after input so hover delays / tooltips / ImGui animations settle.
         if (now -% app.last_activity_ms < 1500) return 100;
-        if (app.ready and im.ImGui_GetIO().*.WantTextInput) return 500; // caret blink
+        // Caret blink. Not under automation: nothing ever focuses the window away from a text field there,
+        // so the blink would cost ~1 % CPU for good.
+        if (app.ready and !automation.active and im.ImGui_GetIO().*.WantTextInput) return 500;
         return w.INFINITE;
     }
 
@@ -425,10 +420,6 @@ pub const App = struct {
         ctx.*.lpVtbl.*.ClearRenderTargetView.?(ctx, app.rtv, &clear);
         cImGui_ImplDX11_RenderDrawData(im.ImGui_GetDrawData());
         if (automation.active) automation.afterRender(app);
-        if (app.cfg.viewports) {
-            im.ImGui_UpdatePlatformWindows();
-            im.ImGui_RenderPlatformWindowsDefault();
-        }
         const hr = app.swapchain.*.lpVtbl.*.Present.?(app.swapchain, 1, 0);
         if (hr == w.DXGI_ERROR_DEVICE_REMOVED or hr == w.DXGI_ERROR_DEVICE_RESET) app.recreateDevice();
         app.frame_count += 1;
@@ -446,14 +437,15 @@ pub const App = struct {
         wc.hCursor = w.LoadCursorW(null, intResource(32512)); // IDC_ARROW: MAKEINTRESOURCE/A-W macros do not translate
         wc.hIcon = if (app.cfg.icon_id) |id| w.LoadIconW(hinst, intResource(id)) else w.LoadIconW(null, intResource(32512)); // IDI_APPLICATION
         wc.lpszClassName = class_name;
-        if (w.RegisterClassExW(&wc) == 0) return error.RegisterClassFailed;
+        // A second App in the same process (after deinit) finds the class still registered.
+        if (w.RegisterClassExW(&wc) == 0 and w.GetLastError() != w.ERROR_CLASS_ALREADY_EXISTS) return error.RegisterClassFailed;
 
         const title = try win.toW(app.gpa, app.cfg.title);
         defer app.gpa.free(title);
         const target = targetMonitor(app.gpa);
         const style: w.DWORD = @intCast(w.WS_OVERLAPPEDWINDOW);
-        const x: c_int = if (target) |m| m.work.left + 16 else w.CW_USEDEFAULT;
-        const y: c_int = if (target) |m| m.work.top + 16 else w.CW_USEDEFAULT;
+        const x: c_int = if (target) |m| m.left + 16 else w.CW_USEDEFAULT;
+        const y: c_int = if (target) |m| m.top + 16 else w.CW_USEDEFAULT;
         app.hwnd = w.CreateWindowExW(0, class_name, title.ptr, style, x, y, 800, 600, null, null, hinst, null);
         if (app.hwnd == null) return error.CreateWindowFailed;
 
@@ -464,9 +456,9 @@ pub const App = struct {
         const ww = rc.right - rc.left;
         const wh = rc.bottom - rc.top;
         if (target) |m| {
-            const cx = m.work.left + @divTrunc(m.work.right - m.work.left - ww, 2);
-            const cy = m.work.top + @divTrunc(m.work.bottom - m.work.top - wh, 2);
-            _ = w.SetWindowPos(app.hwnd, null, cx, @max(cy, m.work.top), ww, wh, @intCast(w.SWP_NOZORDER | w.SWP_NOACTIVATE));
+            const cx = m.left + @divTrunc(m.right - m.left - ww, 2);
+            const cy = m.top + @divTrunc(m.bottom - m.top - wh, 2);
+            _ = w.SetWindowPos(app.hwnd, null, cx, @max(cy, m.top), ww, wh, @intCast(w.SWP_NOZORDER | w.SWP_NOACTIVATE));
         } else {
             _ = w.SetWindowPos(app.hwnd, null, 0, 0, ww, wh, @intCast(w.SWP_NOZORDER | w.SWP_NOACTIVATE | w.SWP_NOMOVE));
         }
@@ -572,16 +564,14 @@ fn intResource(id: u16) w.LPCWSTR {
     return @ptrFromInt(@as(usize, id));
 }
 
-const Monitor = struct { work: w.RECT };
-
 /// MAKEKIT_DISPLAY=\\.\DISPLAY1 -> that monitor's work area (null when unset/unknown).
-fn targetMonitor(gpa: Allocator) ?Monitor {
+fn targetMonitor(gpa: Allocator) ?w.RECT {
     const name = (win.getEnv(gpa, "MAKEKIT_DISPLAY") catch null) orelse return null;
     defer gpa.free(name);
     display_env_set = true;
     const wname = win.toW(gpa, name) catch return null;
     defer gpa.free(wname);
-    var ctx: struct { want: []const u16, found: ?Monitor = null } = .{ .want = wname };
+    var ctx: struct { want: []const u16, found: ?w.RECT = null } = .{ .want = wname };
     const Enum = struct {
         fn cb(hmon: w.HMONITOR, _: w.HDC, _: w.LPRECT, lp: w.LPARAM) callconv(.c) w.WINBOOL {
             const c: *@TypeOf(ctx) = @ptrFromInt(@as(usize, @bitCast(lp)));
@@ -590,7 +580,7 @@ fn targetMonitor(gpa: Allocator) ?Monitor {
             if (w.GetMonitorInfoW(hmon, @ptrCast(&mi)) == 0) return 1;
             const dev = std.mem.sliceTo(&mi.szDevice, 0);
             if (std.ascii.eqlIgnoreCase(std.mem.sliceAsBytes(dev), std.mem.sliceAsBytes(c.want))) {
-                c.found = .{ .work = mi.unnamed_0.rcWork };
+                c.found = mi.unnamed_0.rcWork;
                 return 0;
             }
             return 1;

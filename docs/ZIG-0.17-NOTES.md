@@ -1186,14 +1186,22 @@ active (caret). Palettes: `kit.app.palettes.cleaner` / `.pack`; `kit.app.color(0
 `colorU32(0xRRGGBB)` for ImDrawList; palette fields `rail*`/`danger` are for app-drawn chrome.
 `MAKEKIT_DISPLAY=\\.\DISPLAY1` centers the window on that monitor and shows it without activation.
 
-Widgets (`kit.ui`): `triCheckbox(label, *Tri)` (`.off/.on/.mixed`), `openMessage(id)` +
-`messageBox(id, kind, text, buttons) ?usize` (Enter = 0, Esc = last), `progressStrip(id, status, done,
-total, can_cancel) bool` (Cancel label `Cancel##<id>`; `total == 0` = indeterminate), `iconButton(icon,
-label, tooltip) bool`. Win32 helpers (`kit.win`): `toW/fromW/fromWZ/L`, `check`, `comInitSta`, `release`,
-`Lock`, `getEnv`, `expandEnv`, `knownFolder`, registry (`openKey/createKey/deleteKeyTree`, `Key.read*/
-write*/deleteValue/subkeys/values`, `.view = .wow64_64/.wow64_32`), `shellExecute` (verb `runas`, wait,
-exit code, hidden), `openFiles/saveFile/pickFolder`, `recycle`, `sessionId`, `osVersion`, `isElevated`.
+Widgets (`kit.ui`): `checkbox(label, *bool)` (compact box), `triCheckbox(label, *Tri)` (`.off/.on/.mixed`,
+same box), `text(id, text, ?0xRRGGBB, wrap_w)` (TextUnformatted that automation can read: item
+`<text>##<id>`, value = text; `wrap_w` 0 = no wrap), `openMessage(id)` + `messageBox(id, kind, text,
+buttons) ?usize` / `messageBoxEx(..., .{ .width = 480 })` (Enter = 0, Esc = last; items `<text>##msgText`,
+`<button>##msgButton<i>`), `progressStrip(id, status, done, total, can_cancel) bool` (items `##status`,
+`##percent`, `Cancel##cancel`; `total == 0` = indeterminate), `iconButton(icon, label, tooltip) bool`.
+Win32 helpers (`kit.win`): `toW/fromW/fromWZ/L`, `check`, `comInitSta`, `release`, `Lock`, `getEnv`,
+`expandEnv`, `knownFolder`, registry (`openKey/createKey/deleteKeyTree`, `Key.read*/write*/deleteValue/
+hasValue/deleteSubTree(leaf)/subkeys/values`, `.view = .wow64_64/.wow64_32`; paths and value names of
+any length), long paths (`longPathW(gpa, path)` adds `\\?\` / `\\?\UNC\` from 248 units on,
+`exists/isDir/isFile(path)`), `shellExecute` (verb `runas`, wait, exit code, hidden),
+`openFiles/saveFile/pickFolder`, `recycle`, `sessionId`, `osVersion`, `isElevated`. `w` also has
+tlhelp32 (`CreateToolhelp32Snapshot`, `Process32FirstW/NextW`, `PROCESSENTRY32W`).
 COM-using helpers need `comInitSta()` on the calling thread (App.init does it for the UI thread).
+Config has no docking/viewport switches (unused); an app that wants docking sets
+`ImGui_GetIO().*.ConfigFlags |= im.ImGuiConfigFlags_DockingEnable` after `App.init`.
 
 ## K7. Background jobs (`kit.jobs`)
 
@@ -1210,15 +1218,16 @@ fn scan(job: *kit.jobs.Job) anyerror!void {
 test "K7 jobs.Job" {
     var job: kit.jobs.Job = .{};
     try job.start(null, scan); // `user` ptr -> job.ctx(T) in the worker
-    while (!job.isFinished()) std.atomic.spinLoopHint(); // UI: poll once per frame instead
-    job.join();
+    // UI, once per frame: true exactly once per run, then the thread is joined
+    while (!job.takeFinished()) std.atomic.spinLoopHint();
     try testing.expectEqual(@as(f32, 1), job.progress());
 }
 ```
 
 - A worker that does shell COM (recycle bin, dialogs) must call `kit.win.comInitSta()` itself.
 - `Job` must not move while running (keep it in your state struct). `job.start` fails with `error.Busy`
-  until the previous run was `join`ed.
+  until the previous run was `join`ed. `isFinished()` stays true after `join()`; per-frame polling uses
+  `if (job.takeFinished()) ...` (true once, joins).
 - Shutdown order: `job.cancel(); job.join();` **before** `app.deinit()` (workers wake the app).
 
 ## K8. GUI test automation (instead of UIA)
@@ -1226,18 +1235,30 @@ test "K7 jobs.Job" {
 `MAKEKIT_AUTOMATION=1` starts a pipe server `\\.\pipe\makekit-auto-<pid>`: one command per line, one
 JSON object per reply line (`{"ok":true,...}` / `{"ok":false,"error":"..."}`), executed on the UI thread
 between frames. Real mouse/keyboard/focus messages are ignored while it is on, so a human cannot disturb a
-test and the window works in the background. Commands: `list`, `click|dblclick|rclick|hover <label>`,
-`type <text>`, `key <[ctrl+][shift+][alt+]Name>` (ImGuiKey names: `Enter`, `Escape`, `Tab`, `A`, `F5`...),
-`wait <label> [timeout_ms]`, `frames <n>`, `screenshot <path.bmp>`, `quit`. `<label>` = exact full label,
-else a label ending in the given `##id`, else a substring; ambiguous -> error. Items have `label, window,
-x0,y0,x1,y1, visible, disabled, checkable, checked, openable, opened, inputable, edited`. Plain text
-(`TextUnformatted`) has no item: show state you want to assert as a labeled widget.
+test and the window works in the background. Commands: `list`, `click|dblclick|rclick|hover <label> [@x]`
+(`@12` px from the left edge, `@-12` from the right, `@75%` of the width, e.g. a column of a
+SpanAllColumns row; default = centre), `type <text>`, `key <[ctrl+][shift+][alt+]Name>` (ImGuiKey names:
+`Enter`, `Escape`, `Tab`, `A`, `F5`...), `wait <label> [timeout_ms]`, `frames <n>`, `screenshot
+<path.bmp>`, `quit`. `<label>` = exact full label, else the visible text (the label up to `##`), else a
+label ending in the given `##id`, else a substring; several matches -> the only visible one, else the only
+visible one in the focused window (an open modal wins over the page behind it), else error "ambiguous".
+Items have `label, window, x0,y0,x1,y1, visible, disabled, checkable, checked, openable, opened, inputable,
+edited, selected, mixed, value`: `selected` = Selectable drawn selected / the tab whose content is shown,
+`mixed` = drawn with `ImGuiItemFlags_MixedValue` (`triCheckbox` .mixed), `value` = InputText* buffer
+(never for `ImGuiInputTextFlags_Password` or `CallbackResize`), BeginCombo preview, `kit.ui.text`; null
+otherwise. Plain ImGui tab bars (`BeginTabItem`) and combos (`BeginCombo`) are visible by label.
+How: `src/c/im.h` renames `im.ImGui_Selectable*/BeginCombo/InputText*` to `mkte_*` wrappers in
+`src/te_hooks.cpp` (same signatures; they report what ImGui's hooks leave out), and the ItemInfo hook keeps a
+label that arrives before its ItemAdd (TabItemEx). Plain text (`TextUnformatted`) has no item: use
+`kit.ui.text`, or `kit.automation.tagLastItem(label, value)` after any custom-drawn item. Items are recorded
+only under automation; there the loop also skips the caret blink (idle = 0 % CPU with a field focused).
 
 PowerShell 5.1 client `tools/imgui-auto.ps1` (dot-source): `Start-AutoApp -Exe -Args -Env` (sets
 `MAKEKIT_AUTOMATION=1`, `MAKEKIT_DISPLAY=\\.\DISPLAY1`), `Get-AutoItems [-Windows]`, `Invoke-AutoClick
-[-Kind]`, `Invoke-AutoType`, `Invoke-AutoKey`, `Wait-AutoItem`, `Invoke-AutoFrames`, `Save-AutoScreenshot`,
-`Stop-AutoApp`. Wrap results in `@()` before `.Count` (PS 5.1 unrolls single results). `tools/smoke.ps1`
-is the reference test.
+[-Kind] [-At '75%']`, `Invoke-AutoType`, `Invoke-AutoKey`, `Wait-AutoItem`, `Wait-AutoLabel <like>` (polls
+`list` for `-like`, e.g. `'Done*##status'`), `Get-AutoText <label>` (value, else the label up to `##`),
+`Invoke-AutoFrames`, `Save-AutoScreenshot [-Png]` (PNG via System.Drawing), `Stop-AutoApp`. Wrap results in
+`@()` before `.Count` (PS 5.1 unrolls single results). `tools/smoke.ps1` is the reference test.
 
 ## K9. Tooling gotchas on this machine
 

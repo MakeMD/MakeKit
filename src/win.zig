@@ -150,10 +150,31 @@ fn regErr(rc: w.LSTATUS) RegError!void {
 
 pub const KeyOptions = struct { write: bool = false, view: View = .default };
 
+/// Scratch for the UTF-16 strings of one Win32 call: on the stack up to ~500 units, heap beyond (no limit).
+/// `var sb: [1024]u8 = undefined; var bfa = scratch(&sb); const a = bfa.allocator();` + `defer a.free(x)`.
+fn scratch(buf: []u8) std.heap.BufferFirstAllocator {
+    return .init(buf, std.heap.page_allocator);
+}
+
+/// Optional value name -> UTF-16Z (null = the default value); free with `freeOptW`.
+fn optW(a: Allocator, name: ?[]const u8) !?[:0]u16 {
+    return if (name) |s| try toW(a, s) else null;
+}
+
+fn freeOptW(a: Allocator, s: ?[:0]u16) void {
+    if (s) |x| a.free(x);
+}
+
+fn ptrW(s: ?[:0]u16) ?[*:0]const u16 {
+    return if (s) |x| x.ptr else null;
+}
+
 pub fn openKey(root: Root, path: []const u8, opt: KeyOptions) !Key {
-    var buf: [512]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    const p = try toW(fba.allocator(), path);
+    var sb: [1024]u8 = undefined;
+    var bfa = scratch(&sb);
+    const a = bfa.allocator();
+    const p = try toW(a, path);
+    defer a.free(p);
     var h: w.HKEY = null;
     const access: w.REGSAM = (if (opt.write) key_rw else key_r) | viewFlag(opt.view);
     try regErr(w.RegOpenKeyExW(rootKey(root), p.ptr, 0, access, &h));
@@ -162,9 +183,11 @@ pub fn openKey(root: Root, path: []const u8, opt: KeyOptions) !Key {
 
 /// Opens or creates `path` (and missing parents) with read/write access.
 pub fn createKey(root: Root, path: []const u8, view: View) !Key {
-    var buf: [512]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    const p = try toW(fba.allocator(), path);
+    var sb: [1024]u8 = undefined;
+    var bfa = scratch(&sb);
+    const a = bfa.allocator();
+    const p = try toW(a, path);
+    defer a.free(p);
     var h: w.HKEY = null;
     try regErr(w.RegCreateKeyExW(rootKey(root), p.ptr, 0, null, 0, key_rw | viewFlag(view), null, &h, null));
     return .{ .h = h };
@@ -172,9 +195,11 @@ pub fn createKey(root: Root, path: []const u8, view: View) !Key {
 
 /// Deletes `path` with all subkeys and values (in the given view).
 pub fn deleteKeyTree(root: Root, path: []const u8, view: View) !void {
-    var buf: [512]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&buf);
-    const p = try toW(fba.allocator(), path);
+    var sb: [1024]u8 = undefined;
+    var bfa = scratch(&sb);
+    const a = bfa.allocator();
+    const p = try toW(a, path);
+    defer a.free(p);
     var h: w.HKEY = null;
     try regErr(w.RegOpenKeyExW(rootKey(root), p.ptr, 0, key_rw | @as(w.REGSAM, @intCast(w.DELETE)) | viewFlag(view), &h));
     const rc = w.RegDeleteTreeW(h, null);
@@ -228,9 +253,12 @@ pub const Key = struct {
     }
 
     pub fn readDword(k: Key, name: ?[]const u8) !u32 {
-        var buf: [512]u8 = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&buf);
-        const np: ?[*:0]const u16 = if (name) |s| (try toW(fba.allocator(), s)).ptr else null;
+        var sb: [1024]u8 = undefined;
+        var bfa = scratch(&sb);
+        const a = bfa.allocator();
+        const nw = try optW(a, name);
+        defer freeOptW(a, nw);
+        const np = ptrW(nw);
         var v: u32 = 0;
         var size: w.DWORD = 0;
         var kind: w.DWORD = 0;
@@ -302,17 +330,44 @@ pub const Key = struct {
     }
 
     pub fn writeRaw(k: Key, name: ?[]const u8, kind: u32, data: []const u8) !void {
-        var buf: [512]u8 = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&buf);
-        const np: ?[*:0]const u16 = if (name) |s| (try toW(fba.allocator(), s)).ptr else null;
-        try regErr(w.RegSetValueExW(k.h, np, 0, kind, data.ptr, @intCast(data.len)));
+        var sb: [1024]u8 = undefined;
+        var bfa = scratch(&sb);
+        const a = bfa.allocator();
+        const nw = try optW(a, name);
+        defer freeOptW(a, nw);
+        try regErr(w.RegSetValueExW(k.h, ptrW(nw), 0, kind, data.ptr, @intCast(data.len)));
     }
 
     pub fn deleteValue(k: Key, name: ?[]const u8) !void {
-        var buf: [512]u8 = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&buf);
-        const np: ?[*:0]const u16 = if (name) |s| (try toW(fba.allocator(), s)).ptr else null;
-        try regErr(w.RegDeleteValueW(k.h, np));
+        var sb: [1024]u8 = undefined;
+        var bfa = scratch(&sb);
+        const a = bfa.allocator();
+        const nw = try optW(a, name);
+        defer freeOptW(a, nw);
+        try regErr(w.RegDeleteValueW(k.h, ptrW(nw)));
+    }
+
+    /// True when value `name` exists (null = the default value). Names compare case-insensitively.
+    pub fn hasValue(k: Key, name: ?[]const u8) !bool {
+        var sb: [1024]u8 = undefined;
+        var bfa = scratch(&sb);
+        const a = bfa.allocator();
+        const nw = try optW(a, name);
+        defer freeOptW(a, nw);
+        regErr(w.RegQueryValueExW(k.h, ptrW(nw), null, null, null, null)) catch |e| return if (e == error.NotFound) false else e;
+        return true;
+    }
+
+    /// Deletes subkey `leaf` (a name or a relative path) with all its subkeys and values. Needs a key
+    /// opened for writing.
+    pub fn deleteSubTree(k: Key, leaf: []const u8) !void {
+        if (leaf.len == 0) return error.NotFound; // RegDeleteTree(k, "") would empty `k` itself
+        var sb: [1024]u8 = undefined;
+        var bfa = scratch(&sb);
+        const a = bfa.allocator();
+        const lw = try toW(a, leaf);
+        defer a.free(lw);
+        try regErr(w.RegDeleteTreeW(k.h, lw.ptr));
     }
 
     /// Names of direct subkeys (free each + the slice, or use an arena).
@@ -372,6 +427,49 @@ fn shrink(gpa: Allocator, data: []u8, len: usize) ![]u8 {
     if (len == data.len) return data;
     defer gpa.free(data);
     return gpa.dupe(u8, data[0..len]);
+}
+
+// ---------------------------------------------------------------- long paths
+
+/// `path` as a UTF-16Z Win32 path (caller frees). Long ones (>= 248 units) are made absolute and get the
+/// `\\?\` (`\\?\UNC\`) prefix, so they work without LongPathsEnabled / a longPathAware manifest.
+pub fn longPathW(gpa: Allocator, path: []const u8) ![:0]u16 {
+    const wp = try toW(gpa, path);
+    if (wp.len < 248 or std.mem.startsWith(u16, wp, L("\\\\?\\")) or std.mem.startsWith(u16, wp, L("\\\\.\\"))) return wp;
+    defer gpa.free(wp);
+    const n = w.GetFullPathNameW(wp.ptr, 0, null, null);
+    if (n == 0) return error.Unexpected;
+    const full = try gpa.alloc(u16, n);
+    defer gpa.free(full);
+    const len = w.GetFullPathNameW(wp.ptr, n, full.ptr, null);
+    if (len == 0 or len >= n) return error.Unexpected;
+    const unc = full[0] == '\\' and full[1] == '\\'; // \\server\share -> \\?\UNC\server\share
+    return std.mem.concatWithSentinel(gpa, u16, &.{ if (unc) L("\\\\?\\UNC") else L("\\\\?\\"), full[@intFromBool(unc)..len] }, 0);
+}
+
+fn attributes(path: []const u8) ?w.DWORD {
+    var sb: [1024]u8 = undefined;
+    var bfa = scratch(&sb);
+    const a = bfa.allocator();
+    const p = longPathW(a, path) catch return null;
+    defer a.free(p);
+    const r = w.GetFileAttributesW(p.ptr);
+    return if (r == w.INVALID_FILE_ATTRIBUTES) null else r;
+}
+
+/// File or folder exists (long paths ok; unreadable = false).
+pub fn exists(path: []const u8) bool {
+    return attributes(path) != null;
+}
+
+pub fn isDir(path: []const u8) bool {
+    const a = attributes(path) orelse return false;
+    return a & w.FILE_ATTRIBUTE_DIRECTORY != 0;
+}
+
+pub fn isFile(path: []const u8) bool {
+    const a = attributes(path) orelse return false;
+    return a & w.FILE_ATTRIBUTE_DIRECTORY == 0;
 }
 
 // ---------------------------------------------------------------- shell / processes
@@ -664,8 +762,96 @@ test "registry round trip under HKCU" {
         try k.deleteValue("d");
         try std.testing.expectError(error.NotFound, k.readDword("d"));
     }
+    {
+        // > 255 UTF-16 units (each component stays under the 255 limit), long value name, hasValue, deleteSubTree
+        const as: [200]u8 = @splat('a');
+        const bs: [200]u8 = @splat('b');
+        const long = try std.mem.concat(gpa, u8, &.{ path, "\\", &as, "\\", &bs });
+        defer gpa.free(long);
+        const name_buf: [600]u8 = @splat('v');
+        const name: []const u8 = &name_buf;
+        {
+            const k = try createKey(.hkcu, long, .default);
+            defer k.close();
+            try k.writeDword(name, 7);
+        }
+        const k = try openKey(.hkcu, long, .{ .write = true });
+        defer k.close();
+        try std.testing.expectEqual(@as(u32, 7), try k.readDword(name));
+        try std.testing.expect(try k.hasValue(name));
+        try std.testing.expect(!try k.hasValue("missing"));
+        try k.deleteValue(name);
+        try std.testing.expect(!try k.hasValue(name));
+        const parent = try openKey(.hkcu, path, .{ .write = true });
+        defer parent.close();
+        try parent.deleteSubTree(&as);
+        try std.testing.expectError(error.NotFound, parent.deleteSubTree(&as));
+        try std.testing.expectError(error.NotFound, openKey(.hkcu, long, .{}));
+    }
     try deleteKeyTree(.hkcu, path, .default);
     try std.testing.expectError(error.NotFound, openKey(.hkcu, path, .{}));
+}
+
+test "long paths: exists / isDir / isFile past MAX_PATH" {
+    const gpa = std.testing.allocator;
+    var rnd: [4]u8 = undefined;
+    std.testing.io.random(&rnd);
+    const root = try expandEnv(gpa, "%TEMP%");
+    defer gpa.free(root);
+    const base = try gpa.print("{s}\\makekit-test-{x}", .{ root, std.mem.readInt(u32, &rnd, .little) });
+    defer gpa.free(base);
+    const ds: [120]u8 = @splat('d');
+    const seg = "\\" ++ ds;
+    const dirs = [_][]const u8{ base, try std.mem.concat(gpa, u8, &.{ base, seg }), try std.mem.concat(gpa, u8, &.{ base, seg, seg }) };
+    defer for (dirs[1..]) |d| gpa.free(d);
+    const file = try std.mem.concat(gpa, u8, &.{ dirs[2], "\\f.txt" });
+    defer gpa.free(file);
+    try std.testing.expect(file.len > 260);
+    defer { // never leave test dirs behind
+        if (longPathW(gpa, file)) |p| {
+            _ = w.DeleteFileW(p.ptr);
+            gpa.free(p);
+        } else |_| {}
+        var i: usize = dirs.len;
+        while (i > 0) {
+            i -= 1;
+            if (longPathW(gpa, dirs[i])) |p| {
+                _ = w.RemoveDirectoryW(p.ptr);
+                gpa.free(p);
+            } else |_| {}
+        }
+    }
+    for (dirs) |d| {
+        const p = try longPathW(gpa, d);
+        defer gpa.free(p);
+        try std.testing.expect(w.CreateDirectoryW(p.ptr, null) != 0);
+    }
+    const fp = try longPathW(gpa, file);
+    defer gpa.free(fp);
+    try std.testing.expect(std.mem.startsWith(u16, fp, L("\\\\?\\")));
+    const h = w.CreateFileW(fp.ptr, w.GENERIC_WRITE, 0, null, w.CREATE_NEW, w.FILE_ATTRIBUTE_NORMAL, null);
+    try std.testing.expect(h != w.INVALID_HANDLE_VALUE);
+    _ = w.CloseHandle(h);
+    try std.testing.expect(exists(file) and isFile(file) and !isDir(file));
+    try std.testing.expect(exists(dirs[2]) and isDir(dirs[2]) and !isFile(dirs[2]));
+    try std.testing.expect(!exists(file[0 .. file.len - 1]) and !isFile(file[0 .. file.len - 1]));
+    const short = try longPathW(gpa, "C:\\Windows");
+    defer gpa.free(short);
+    try std.testing.expectEqualSlices(u16, L("C:\\Windows"), short); // short paths stay as they are
+}
+
+test "tlhelp32: the process snapshot lists this process" {
+    const snap = w.CreateToolhelp32Snapshot(w.TH32CS_SNAPPROCESS, 0);
+    try std.testing.expect(snap != w.INVALID_HANDLE_VALUE);
+    defer _ = w.CloseHandle(snap);
+    var pe: w.PROCESSENTRY32W = undefined;
+    pe.dwSize = @sizeOf(w.PROCESSENTRY32W);
+    var found = false;
+    var more = w.Process32FirstW(snap, &pe);
+    while (more != 0) : (more = w.Process32NextW(snap, &pe)) {
+        if (pe.th32ProcessID == w.GetCurrentProcessId()) found = true;
+    }
+    try std.testing.expect(found);
 }
 
 test "env, known folder, os version" {

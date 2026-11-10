@@ -18,6 +18,7 @@
 #include <taskschd.h>
 #include <wbemcli.h>
 #include <winioctl.h>
+#include <tlhelp32.h>
 #include <srrestoreptapi.h>
 #include <dwmapi.h>
 #include <d3d11.h>

@@ -1,19 +1,21 @@
 // Dear ImGui test-engine hooks (imgui is compiled with IMGUI_ENABLE_TEST_ENGINE).
-// Records every item submitted in a frame (id, full label, root window, rect, status) so that
+// Records every item submitted in a frame (id, full label, root window, rect, status, value) so that
 // src/automation.zig can find and click widgets by label. Signatures must match imgui_internal.h
 // ("[SECTION] Test Engine specific hooks") of the vendored version exactly (C++ linkage).
+// Recording is on only under automation (mkte_enable, called by kit.automation.start).
 #include "imgui.h"
 #include "imgui_internal.h"
 
 extern "C" {
 struct MkteItem {
     ImGuiID id;
-    int status;      // ImGuiItemStatusFlags incl. test-engine bits (Checkable=1<<22, Checked=1<<23, ...)
-    int item_flags;  // ImGuiItemFlags (Disabled = 1<<10)
+    int status;      // ImGuiItemStatusFlags incl. test-engine bits (Checkable=1<<22, Checked=1<<23, ...) + MKTE_SELECTED
+    int item_flags;  // ImGuiItemFlags (Disabled = 1<<10, MixedValue = 1<<12)
     float x0, y0, x1, y1;
     int label;       // offset into string pool, -1 = none
     int window;      // offset into string pool (root window name)
     int visible;     // overlaps the window clip rect
+    int value;       // offset into string pool, -1 = none (input text, combo preview, kit.ui.text)
 };
 struct MkteWindow {
     const char* name;
@@ -23,20 +25,30 @@ struct MkteWindow {
 };
 }
 
+static const int MKTE_SELECTED = 1 << 30; // selected Selectable / visible tab (no ImGui status bit for it)
+
 namespace {
+struct Pending { ImGuiID id; int label; };
 struct Frame {
     ImVector<MkteItem> items;
     ImVector<ImGuiWindow*> roots; // parallel to items: root window, to drop items of hidden windows
     ImVector<char> pool;
-    int str(const char* s) {
+    ImVector<Pending> pending;    // ITEM_INFO that came before its ItemAdd (TabItemEx does that)
+    int str(const char* s, int n = -1) {
         if (!s) return -1;
+        if (n < 0) n = (int)strlen(s);
         int off = pool.Size;
-        int n = (int)strlen(s);
         pool.resize(off + n + 1);
-        memcpy(pool.Data + off, s, (size_t)n + 1);
+        memcpy(pool.Data + off, s, (size_t)n);
+        pool.Data[off + n] = 0;
         return off;
     }
-    void clear() { items.resize(0); roots.resize(0); pool.resize(0); }
+    MkteItem* find(ImGuiID id) {
+        for (int i = items.Size - 1; i >= 0; i--)
+            if (items[i].id == id) return &items[i];
+        return nullptr;
+    }
+    void clear() { items.resize(0); roots.resize(0); pool.resize(0); pending.resize(0); }
 };
 Frame g_frames[2];
 int g_cur = 0; // index of frame being recorded; 1 - g_cur = last completed frame
@@ -55,8 +67,16 @@ void ImGuiTestEngineHook_ItemAdd(ImGuiContext* ctx, ImGuiID id, const ImRect& bb
     ImRect r = item_data ? item_data->Rect : bb;
     it.x0 = r.Min.x; it.y0 = r.Min.y; it.x1 = r.Max.x; it.y1 = r.Max.y;
     it.label = -1;
+    it.value = -1;
     it.window = f.str(win ? win->RootWindow->Name : "");
     it.visible = (win && win->ClipRect.Overlaps(r)) ? 1 : 0;
+    for (int i = 0; i < f.pending.Size; i++)
+        if (f.pending[i].id == id) { // a tab: its label arrived first; its status flags were stale, so skip them
+            if (it.visible) it.label = f.pending[i].label;
+            if (g.CurrentTabBar && g.CurrentTabBar->VisibleTabId == id) it.status |= MKTE_SELECTED;
+            f.pending.erase(f.pending.Data + i);
+            break;
+        }
     f.items.push_back(it);
     f.roots.push_back(win ? win->RootWindow : nullptr);
 }
@@ -65,12 +85,13 @@ void ImGuiTestEngineHook_ItemInfo(ImGuiContext* ctx, ImGuiID id, const char* lab
 {
     IM_UNUSED(ctx);
     Frame& f = g_frames[g_cur];
-    for (int i = f.items.Size - 1; i >= 0; i--)
-        if (f.items[i].id == id) {
-            f.items[i].label = f.str(label);
-            f.items[i].status |= flags;
-            return;
-        }
+    if (MkteItem* it = f.find(id)) {
+        it->label = f.str(label);
+        it->status |= flags;
+        return;
+    }
+    Pending p = { id, f.str(label) };
+    f.pending.push_back(p);
 }
 
 void ImGuiTestEngineHook_Log(ImGuiContext* ctx, const char* fmt, ...)
@@ -104,10 +125,30 @@ void mk_imgui_assert(const char* expr, const char* file, int line)
 
 void mkte_enable(void) { GImGui->TestEngineHookItems = true; }
 
+// Adds to the record of item `id` in the frame being built: label (only when visible, like ImGui's own
+// ITEM_INFO), value (len < 0 = NUL-terminated) and status bits. A missing record is created from
+// g.LastItemData when `add` (items ImGui does not report, e.g. TextUnformatted), else ignored.
+void mkte_tag(ImGuiID id, const char* label, const char* value, int value_len, int status, int add)
+{
+    ImGuiContext& g = *GImGui;
+    if (!g.TestEngineHookItems || id == 0) return;
+    Frame& f = g_frames[g_cur];
+    MkteItem* it = f.find(id);
+    if (!it) {
+        if (!add) return;
+        ImGuiTestEngineHook_ItemAdd(&g, id, g.LastItemData.Rect, &g.LastItemData);
+        it = &f.items.back();
+    }
+    if (label && it->visible) it->label = f.str(label);
+    if (value) it->value = f.str(value, value_len);
+    it->status |= status;
+}
+
 // Call once per frame after ImGui::Render(): publishes the recorded frame.
 void mkte_end_frame(void)
 {
     ImGuiContext& g = *GImGui;
+    if (!g.TestEngineHookItems) return;
     // Drop items of windows that ended up inactive/hidden (e.g. the implicit "Debug##Default").
     Frame& done = g_frames[g_cur];
     int n = 0;
@@ -139,4 +180,67 @@ const MkteItem* mkte_items(void) { return g_frames[1 - g_cur].items.Data; }
 const char* mkte_pool(void) { return g_frames[1 - g_cur].pool.Data; }
 int mkte_window_count(void) { return g_windows.Size; }
 const MkteWindow* mkte_windows(void) { return g_windows.Data; }
+
+// ---- C API interposers: src/c/im.h renames these dear_bindings entry points to mkte_*, so every
+// im.ImGui_Selectable* / BeginCombo / InputText* call from Zig lands here and reports the state ImGui's
+// own hooks leave out (selected, combo label + preview, input text). The id is taken before the call:
+// the widget may open a popup window and change the ID stack.
+struct MkVec2 { float x, y; }; // = dear_bindings' C ImVec2
+
+static bool hooked() { return GImGui->TestEngineHookItems; }
+
+static bool selectable(const char* label, bool selected, ImGuiSelectableFlags flags, MkVec2 size)
+{
+    const ImGuiID id = hooked() ? ImGui::GetID(label) : 0;
+    const bool r = ImGui::Selectable(label, selected, flags, ImVec2(size.x, size.y));
+    if (selected) mkte_tag(id, nullptr, nullptr, 0, MKTE_SELECTED, 0);
+    return r;
+}
+bool mkte_Selectable(const char* label) { return selectable(label, false, 0, MkVec2{0, 0}); }
+bool mkte_SelectableEx(const char* label, bool selected, ImGuiSelectableFlags flags, MkVec2 size) { return selectable(label, selected, flags, size); }
+bool mkte_SelectableBoolPtrEx(const char* label, bool* p_selected, ImGuiSelectableFlags flags, MkVec2 size)
+{
+    if (!selectable(label, *p_selected, flags, size)) return false;
+    *p_selected = !*p_selected;
+    return true;
+}
+bool mkte_SelectableBoolPtr(const char* label, bool* p_selected, ImGuiSelectableFlags flags) { return mkte_SelectableBoolPtrEx(label, p_selected, flags, MkVec2{0, 0}); }
+
+bool mkte_BeginCombo(const char* label, const char* preview_value, ImGuiComboFlags flags)
+{
+    const ImGuiID id = hooked() ? ImGui::GetID(label) : 0;
+    const bool open = ImGui::BeginCombo(label, preview_value, flags);
+    mkte_tag(id, label, preview_value, -1, ImGuiItemStatusFlags_Openable | (open ? ImGuiItemStatusFlags_Opened : 0), 0);
+    return open;
+}
+
+// ponytail: no value for passwords (never leave the process) and CallbackResize buffers (may have moved).
+static void tagInput(ImGuiID id, const char* buf, ImGuiInputTextFlags flags)
+{
+    if (!(flags & (ImGuiInputTextFlags_Password | ImGuiInputTextFlags_CallbackResize))) mkte_tag(id, nullptr, buf, -1, 0, 0);
+}
+bool mkte_InputTextEx(const char* label, char* buf, size_t buf_size, ImGuiInputTextFlags flags, ImGuiInputTextCallback callback, void* user_data)
+{
+    const ImGuiID id = hooked() ? ImGui::GetID(label) : 0;
+    const bool r = ImGui::InputText(label, buf, buf_size, flags, callback, user_data);
+    tagInput(id, buf, flags);
+    return r;
+}
+bool mkte_InputText(const char* label, char* buf, size_t buf_size, ImGuiInputTextFlags flags) { return mkte_InputTextEx(label, buf, buf_size, flags, nullptr, nullptr); }
+bool mkte_InputTextMultilineEx(const char* label, char* buf, size_t buf_size, MkVec2 size, ImGuiInputTextFlags flags, ImGuiInputTextCallback callback, void* user_data)
+{
+    const ImGuiID id = hooked() ? ImGui::GetID(label) : 0;
+    const bool r = ImGui::InputTextMultiline(label, buf, buf_size, ImVec2(size.x, size.y), flags, callback, user_data);
+    tagInput(id, buf, flags);
+    return r;
+}
+bool mkte_InputTextMultiline(const char* label, char* buf, size_t buf_size) { return mkte_InputTextMultilineEx(label, buf, buf_size, MkVec2{0, 0}, 0, nullptr, nullptr); }
+bool mkte_InputTextWithHintEx(const char* label, const char* hint, char* buf, size_t buf_size, ImGuiInputTextFlags flags, ImGuiInputTextCallback callback, void* user_data)
+{
+    const ImGuiID id = hooked() ? ImGui::GetID(label) : 0;
+    const bool r = ImGui::InputTextWithHint(label, hint, buf, buf_size, flags, callback, user_data);
+    tagInput(id, buf, flags);
+    return r;
+}
+bool mkte_InputTextWithHint(const char* label, const char* hint, char* buf, size_t buf_size, ImGuiInputTextFlags flags) { return mkte_InputTextWithHintEx(label, hint, buf, buf_size, flags, nullptr, nullptr); }
 }

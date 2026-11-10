@@ -56,7 +56,7 @@ function Invoke-AutoCommand {
 }
 
 # Items of the last rendered frame (id, label, window, x0..y1, visible, disabled, checkable, checked,
-# openable, opened, inputable, edited). -Windows returns the window list instead.
+# openable, opened, inputable, edited, selected, mixed, value). -Windows returns the window list instead.
 function Get-AutoItems {
     param([Parameter(Mandatory = $true)]$App, [switch]$Windows)
     $r = Invoke-AutoCommand $App 'list'
@@ -64,11 +64,15 @@ function Get-AutoItems {
     @($r.items)
 }
 
-# Label match: exact full label, else a label ending with the given '##id', else substring.
+# Label match: exact full label, else the visible text (label up to '##'), else a label ending with the
+# given '##id', else substring. -At moves the point off the item centre: '12' px from the left edge,
+# '-12' from the right edge, '75%' of the width (a column of a SpanAllColumns row).
 function Invoke-AutoClick {
     param([Parameter(Mandatory = $true)]$App, [Parameter(Mandatory = $true)][string]$Label,
-        [ValidateSet('click', 'dblclick', 'rclick', 'hover')][string]$Kind = 'click')
-    $null = Invoke-AutoCommand $App "$Kind $Label"
+        [ValidateSet('click', 'dblclick', 'rclick', 'hover')][string]$Kind = 'click', [string]$At = '')
+    $line = "$Kind $Label"
+    if ($At) { $line += " @$At" }
+    $null = Invoke-AutoCommand $App $line
 }
 
 # Types into the active (focused) text input; click the input first.
@@ -90,17 +94,47 @@ function Wait-AutoItem {
     $r.item
 }
 
+# Polls (2 frames + 100 ms per round) until an item label matches -like $Like ('Done*##status'); returns it.
+function Wait-AutoLabel {
+    param([Parameter(Mandatory = $true)]$App, [Parameter(Mandatory = $true)][string]$Like, [int]$TimeoutMs = 5000)
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
+    while ($true) {
+        $hit = @(Get-AutoItems $App | Where-Object { $_.label -like $Like })
+        if ($hit.Count -gt 0) { return $hit[0] }
+        if ((Get-Date) -gt $deadline) { throw "timeout waiting for a label like '$Like'" }
+        $null = Invoke-AutoFrames $App 2
+        Start-Sleep -Milliseconds 100
+    }
+}
+
+# Readable text of an item ('##id' or any label query): its value (input text, combo preview, kit.ui.text),
+# else the visible part of its label (up to '##').
+function Get-AutoText {
+    param([Parameter(Mandatory = $true)]$App, [Parameter(Mandatory = $true)][string]$Label)
+    $r = Invoke-AutoCommand $App "wait $Label 0"
+    if ($r.PSObject.Properties['ambiguous']) { throw "automation: item '$Label' is ambiguous" }
+    $it = $r.item
+    if ($null -ne $it.value) { return [string]$it.value }
+    $i = $it.label.IndexOf('##')
+    if ($i -ge 0) { $it.label.Substring(0, $i) } else { $it.label }
+}
+
 # Renders N frames, returns the frame counter.
 function Invoke-AutoFrames {
     param([Parameter(Mandatory = $true)]$App, [int]$Count = 1)
     (Invoke-AutoCommand $App "frames $Count").frame
 }
 
-# Saves the window's back buffer as a 32-bit BMP.
+# Saves the window's back buffer as a 32-bit BMP, or as PNG with -Png (converted with System.Drawing).
 function Save-AutoScreenshot {
-    param([Parameter(Mandatory = $true)]$App, [Parameter(Mandatory = $true)][string]$Path)
+    param([Parameter(Mandatory = $true)]$App, [Parameter(Mandatory = $true)][string]$Path, [switch]$Png)
     $full = [System.IO.Path]::GetFullPath($Path)
-    $null = Invoke-AutoCommand $App "screenshot $full"
+    if (-not $Png) { $null = Invoke-AutoCommand $App "screenshot $full"; return $full }
+    $bmp = [System.IO.Path]::ChangeExtension($full, '.tmp.bmp')
+    $null = Invoke-AutoCommand $App "screenshot $bmp"
+    Add-Type -AssemblyName System.Drawing
+    $img = [System.Drawing.Image]::FromFile($bmp)
+    try { $img.Save($full, [System.Drawing.Imaging.ImageFormat]::Png) } finally { $img.Dispose(); Remove-Item -LiteralPath $bmp }
     $full
 }
 

@@ -263,7 +263,7 @@ fn scan(job: *kit.jobs.Job) anyerror!void {
 test "K7 jobs.Job" {
     var job: kit.jobs.Job = .{};
     try job.start(null, scan); // `user` ptr -> job.ctx(T) in the worker
-    while (!job.isFinished()) std.atomic.spinLoopHint(); // UI: poll once per frame instead
-    job.join();
+    // UI, once per frame: true exactly once per run, then the thread is joined
+    while (!job.takeFinished()) std.atomic.spinLoopHint();
     try testing.expectEqual(@as(f32, 1), job.progress());
 }
