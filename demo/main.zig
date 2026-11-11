@@ -27,6 +27,7 @@ const State = struct {
     radio: c_int = 0,
     mixed: ui.Tri = .mixed,
     slider: c_int = 40,
+    lang: ?kit.i18n.Lang = null, // Auto
 
     fn setInfo(s: *State, comptime fmt: []const u8, args: anytype) void {
         const text: []const u8 = std.mem.print(&s.info, fmt, args) catch &s.info; // truncated
@@ -36,6 +37,7 @@ const State = struct {
 
 pub fn main(init: std.process.Init) !void {
     var state: State = .{ .gpa = init.gpa };
+    kit.i18n.apply(state.lang); // MAKEKIT_LANG > saved choice > Windows UI language > en
     const app = try App.init(init.gpa, .{ .title = "MakeKit Demo", .size = .{ 1280, 900 } });
     defer app.deinit();
     app.run(.{ .user = &state, .frame = frame, .close_requested = closeRequested, .files_dropped = dropped });
@@ -131,6 +133,26 @@ fn theme(app: *App) void {
     im.ImGui_SetItemTooltip("Icon-only button");
     im.ImGui_SameLine();
     _ = im.ImGui_TextLink("Text link##link");
+
+    // kit.i18n: picker (applies at once) + one line per language, so every glyph shows up in the screenshot.
+    im.ImGui_SeparatorText("Languages");
+    const s = app.userData(State);
+    im.ImGui_SetNextItemWidth(180 * app.scale());
+    _ = kit.i18n.combo("Language##lang", "Auto (system)", &s.lang);
+    im.ImGui_SameLine();
+    im.ImGui_AlignTextToFramePadding();
+    const l = kit.i18n.current();
+    var lb: [64]u8 = undefined;
+    ui.text("langCur", kit.i18n.fmt(&lb, "{0} ({1})", .{ l.name(), l.code() }), p.muted, 0);
+    const lines = [_][2][:0]const u8{
+        .{ "glyphs_en", "English: The quick brown fox jumps over the lazy dog." },
+        .{ "glyphs_uk", "Українська: Ґанок, їжак, єнот і п’ять яблук — «Гаразд»." },
+        .{ "glyphs_pl", "Polski: Zażółć gęślą jaźń. ĄĆĘŁŃÓŚŹŻ" },
+        .{ "glyphs_de", "Deutsch: Größe, Übermaß, Fußgänger. ÄÖÜ äöü ß „Ja“" },
+        .{ "glyphs_es", "Español: ¿Qué año? ¡Señor Muñoz! á é í ó ú ü ñ Ñ" },
+        .{ "glyphs_fr", "Français: « Ça déjà », où, île, cœur, æ, naïve, Noël, ÿ, â ê î ô û à è ù ç Œ Æ" },
+    };
+    for (lines) |ln| ui.text(ln[0], ln[1], null, 0);
 
     im.ImGui_PushStyleVarImVec2(im.ImGuiStyleVar_ItemSpacing, .{ .x = 6 * app.scale(), .y = 6 * app.scale() });
     defer im.ImGui_PopStyleVar();

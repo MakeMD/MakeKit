@@ -41,6 +41,9 @@ pub const Job = struct {
     status_len: usize = 0,
     err_buf: [512]u8 = undefined, // a localized Windows message in Ukrainian runs to ~200 bytes
     err_len: usize = 0,
+    /// The error the worker returned (not error.Canceled); read it after takeFinished. Branch on this, never on
+    /// errorText: that holds Windows' localized words.
+    err: ?anyerror = null,
     thread: ?std.Thread = null,
     /// Caller's context for the worker (`job.ctx(T)`).
     user: ?*anyopaque = null,
@@ -58,6 +61,7 @@ pub const Job = struct {
         job.status_len = 0;
         job.err_len = 0;
         job.lock.unlock();
+        job.err = null;
         job.user = user;
         job.func = func;
         job.thread = try std.Thread.spawn(.{}, run, .{job});
@@ -65,7 +69,10 @@ pub const Job = struct {
 
     fn run(job: *Job) void {
         job.func(job) catch |e| {
-            if (e != error.Canceled) job.fail("{f}", .{win.errText(e)}); // Windows' words, not the Zig name
+            if (e != error.Canceled) {
+                job.err = e;
+                job.fail("{f}", .{win.errText(e)}); // Windows' words, not the Zig name
+            }
         };
         job.finished_flag.store(true, .release);
         app.wakeGlobal(); // always deliver the final state
@@ -211,4 +218,5 @@ test "job runs, reports progress, cancels" {
     try job.start(null, Worker.boom);
     job.join();
     try std.testing.expectEqualStrings("DiskFull", job.errorText(&buf).?);
+    try std.testing.expectEqual(error.DiskFull, job.err.?);
 }

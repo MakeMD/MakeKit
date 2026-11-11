@@ -272,3 +272,46 @@ test "K7 jobs.Job" {
     while (!job.takeFinished()) std.atomic.spinLoopHint();
     try testing.expectEqual(@as(f32, 1), job.progress());
 }
+
+// ---- K10. Languages: one strings table per language + the tr() accessor
+const i18n = kit.i18n;
+
+// src/i18n/en.zig: the type (one field per string, plurals = i18n.Forms) and the English values.
+const Strings = struct {
+    delete_q: [:0]const u8,
+    files: i18n.Forms,
+};
+const en: Strings = .{ .delete_q = "Delete {0}?", .files = .{ .one = "{0} file", .other = "{0} files" } };
+// src/i18n/uk.zig ... fr.zig: `pub const t: en.Strings = .{...}` (missing or extra field = compile error)
+const uk: Strings = .{ .delete_q = "Видалити {0}?", .files = .{ .one = "{0} файл", .few = "{0} файли", .many = "{0} файлів" } };
+const pl: Strings = .{ .delete_q = "Usunąć {0}?", .files = .{ .one = "{0} plik", .few = "{0} pliki", .many = "{0} plików" } };
+const de: Strings = .{ .delete_q = "{0} löschen?", .files = .{ .one = "{0} Datei", .other = "{0} Dateien" } };
+const es: Strings = .{ .delete_q = "¿Eliminar {0}?", .files = .{ .one = "{0} archivo", .other = "{0} archivos" } };
+const fr: Strings = .{ .delete_q = "Supprimer {0}\u{A0}?", .files = .{ .one = "{0} fichier", .other = "{0} fichiers" } };
+
+// A language without a table is a compile error (EnumArray.init wants every Lang).
+const tables = std.enums.EnumArray(i18n.Lang, *const Strings).init(.{ .en = &en, .uk = &uk, .pl = &pl, .de = &de, .es = &es, .fr = &fr });
+fn tr() *const Strings {
+    return tables.get(i18n.current()); // one atomic load: fine every frame
+}
+
+test "K10 kit.i18n: tables, plurals, {0} templates" {
+    // App test: every table has the plural forms its language needs and the same {N} as English.
+    for (i18n.all) |l| try testing.expectEqual(null, i18n.check(Strings, &en, tables.get(l), l));
+
+    const saved = "pl"; // persist `if (pref) |l| l.code() else "auto"`; read back with Lang.parse
+    const pref: ?i18n.Lang = .parse(saved); // "auto" / unknown -> null = Auto
+    i18n.apply(pref); // MAKEKIT_LANG > pref > Windows UI language > en
+    defer i18n.set(.en);
+    if (i18n.forced() == null) try testing.expectEqual(i18n.Lang.pl, i18n.current());
+    i18n.set(.pl);
+
+    var nb: [32]u8 = undefined;
+    var buf: [64]u8 = undefined;
+    const n: u64 = 5;
+    const files = i18n.fmt(&nb, i18n.pick(tr().files, n), .{n}); // pl: 5 -> many
+    try testing.expectEqualStrings("Usunąć 5 plików?", i18n.fmt(&buf, tr().delete_q, .{files}));
+    i18n.set(.uk);
+    try testing.expectEqualStrings("22 файли", i18n.fmt(&nb, i18n.pick(tr().files, 22), .{22}));
+    try testing.expectEqualStrings("Українська", i18n.Lang.uk.name());
+}

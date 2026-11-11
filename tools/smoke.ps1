@@ -57,6 +57,18 @@ try {
     Check (Wait-AutoItem $app 'About##tabAbout').selected 'About tab selected'
     Invoke-AutoClick $app 'Options##tabOptions'
 
+    # kit.i18n.combo: picking a language applies it on the next frame; Auto goes back to the system language
+    foreach ($c in @('en', 'uk', 'pl', 'de', 'es', 'fr')) { $null = Wait-AutoItem $app "##glyphs_$c" }
+    $sysLang = Get-AutoText $app '##langCur'
+    Invoke-AutoClick $app 'Language##lang'
+    Invoke-AutoClick $app '##lang_pl'
+    $null = Invoke-AutoFrames $app 2
+    Check ((Get-AutoText $app '##langCur') -like '*(pl)') 'language switched to pl'
+    Invoke-AutoClick $app 'Language##lang'
+    Invoke-AutoClick $app '##lang_auto'
+    $null = Invoke-AutoFrames $app 2
+    Check ((Get-AutoText $app '##langCur') -eq $sysLang) "language back to Auto ($sysLang)"
+
     # selectable rows: selected state; click the Status column of a SpanAllColumns row (-At 85%)
     Check (Wait-AutoItem $app 'Browser cache').selected 'row 0 selected'
     Invoke-AutoClick $app 'Thumbnails' -At '85%'

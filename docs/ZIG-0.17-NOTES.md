@@ -1,6 +1,6 @@
 # Zig 0.17.1 cheat-sheet for MakeKit apps (Windows x86_64-windows-gnu)
 
-Part 1 (sections 0-19) = std library; Part 2 (K0-K9, at the end) = using MakeKit: consumer build.zig,
+Part 1 (sections 0-19) = std library; Part 2 (K0-K10, at the end) = using MakeKit: consumer build.zig,
 COM via `w`, Dear ImGui via `im`, app/jobs/ui, GUI automation. Every ` ```zig ` block is compiled and run
 by `zig build test` (Part 1 from `docs/notes_std.zig`, Part 2 from `docs/notes_check.zig`; except the
 K0 build-file fragments, verified by building a consumer). `py -3.12 tools/check-notes.py` checks the sync.
@@ -817,7 +817,7 @@ test "std.testing helpers" {
 
 # Part 2: MakeKit (Win32 / COM / Dear ImGui)
 
-Snippets below are copied verbatim from `docs/notes_check.zig` (`zig build test` runs them; 7 tests).
+Snippets below are copied verbatim from `docs/notes_check.zig` (`zig build test` runs them; 8 tests).
 They use `const kit = @import("kit"); const w = kit.w; const im = kit.im; const testing = std.testing;`.
 
 ## K0. Depending on the kit from an app (verified with a scratch consumer)
@@ -1315,3 +1315,84 @@ PowerShell 5.1 client `tools/imgui-auto.ps1` (dot-source): `Start-AutoApp -Exe -
   the Cyrillic words, don't just check that glyphs are not boxes.
 - A GUI-subsystem exe has no console: run it with stderr redirected
   (`Start-Process ... -RedirectStandardError err.txt`) to see panics / IM_ASSERT traces.
+- Mojibake check for all six UI languages (Cyrillic and Latin-1/Polish read as CP1251/CP1252):
+  `LC_ALL=C.UTF-8 grep -rnE "Р[°ѕµ‡]|С[–‚”]|Ã[¤¶¼Ÿ©¨]|Å[‚›º¼]" src` must print nothing (false positive:
+  the Ukrainian word "Рівень").
+
+## K10. Languages (`kit.i18n`)
+
+Six UI languages: `Lang` = `.en .uk .pl .de .es .fr`. The kit holds no translations: an app keeps one file
+per language in `src/i18n/` (en.zig = the struct type + English; the others = a value of that type) and
+one `tr()` accessor. Strings are `[:0]const u8` (straight into ImGui), plurals `i18n.Forms`.
+
+```zig
+const i18n = kit.i18n;
+
+// src/i18n/en.zig: the type (one field per string, plurals = i18n.Forms) and the English values.
+const Strings = struct {
+    delete_q: [:0]const u8,
+    files: i18n.Forms,
+};
+const en: Strings = .{ .delete_q = "Delete {0}?", .files = .{ .one = "{0} file", .other = "{0} files" } };
+// src/i18n/uk.zig ... fr.zig: `pub const t: en.Strings = .{...}` (missing or extra field = compile error)
+const uk: Strings = .{ .delete_q = "Видалити {0}?", .files = .{ .one = "{0} файл", .few = "{0} файли", .many = "{0} файлів" } };
+const pl: Strings = .{ .delete_q = "Usunąć {0}?", .files = .{ .one = "{0} plik", .few = "{0} pliki", .many = "{0} plików" } };
+const de: Strings = .{ .delete_q = "{0} löschen?", .files = .{ .one = "{0} Datei", .other = "{0} Dateien" } };
+const es: Strings = .{ .delete_q = "¿Eliminar {0}?", .files = .{ .one = "{0} archivo", .other = "{0} archivos" } };
+const fr: Strings = .{ .delete_q = "Supprimer {0}\u{A0}?", .files = .{ .one = "{0} fichier", .other = "{0} fichiers" } };
+
+// A language without a table is a compile error (EnumArray.init wants every Lang).
+const tables = std.enums.EnumArray(i18n.Lang, *const Strings).init(.{ .en = &en, .uk = &uk, .pl = &pl, .de = &de, .es = &es, .fr = &fr });
+fn tr() *const Strings {
+    return tables.get(i18n.current()); // one atomic load: fine every frame
+}
+
+test "K10 kit.i18n: tables, plurals, {0} templates" {
+    // App test: every table has the plural forms its language needs and the same {N} as English.
+    for (i18n.all) |l| try testing.expectEqual(null, i18n.check(Strings, &en, tables.get(l), l));
+
+    const saved = "pl"; // persist `if (pref) |l| l.code() else "auto"`; read back with Lang.parse
+    const pref: ?i18n.Lang = .parse(saved); // "auto" / unknown -> null = Auto
+    i18n.apply(pref); // MAKEKIT_LANG > pref > Windows UI language > en
+    defer i18n.set(.en);
+    if (i18n.forced() == null) try testing.expectEqual(i18n.Lang.pl, i18n.current());
+    i18n.set(.pl);
+
+    var nb: [32]u8 = undefined;
+    var buf: [64]u8 = undefined;
+    const n: u64 = 5;
+    const files = i18n.fmt(&nb, i18n.pick(tr().files, n), .{n}); // pl: 5 -> many
+    try testing.expectEqualStrings("Usunąć 5 plików?", i18n.fmt(&buf, tr().delete_q, .{files}));
+    i18n.set(.uk);
+    try testing.expectEqualStrings("22 файли", i18n.fmt(&nb, i18n.pick(tr().files, 22), .{22}));
+    try testing.expectEqualStrings("Українська", i18n.Lang.uk.name());
+}
+```
+
+API (`src/i18n.zig`):
+- `Lang` methods: `code() [:0]const u8` ("pl"; the value to persist), `name() [:0]const u8` (own name: English,
+  Українська, Polski, Deutsch, Español, Français), `Lang.parse(s) ?Lang` ("pl", "PL", "pl-PL", "pl_PL";
+  "auto"/""/unknown -> null). `i18n.all` = the six in order.
+- `current() Lang` (atomic, default `.en`), `set(Lang)`, `apply(pref: ?Lang)` = `set(forced() orelse pref orelse
+  system())`: call at startup after loading settings and on every change; `detect()` = `forced() orelse system()`
+  (what Auto means), `system()` = `GetUserDefaultUILanguage` primary language or `.en`, `fromLangId(u16) ?Lang`,
+  `forced() ?Lang` = env `MAKEKIT_LANG` (tests/screenshots; beats the saved choice).
+- `plural(Lang, n: u64) Plural` (`.one/.few/.many/.other`): en/de/es one = 1; fr one = 0, 1; uk one = 1, 21, 31..
+  (not 11), few = 2-4, 22-24.. (not 12-14), many = the rest incl. 0; pl like uk except one = only 1.
+  `Forms{ .one, .few, .many, .other }` (all `?[:0]const u8`, default null): en/de/es/fr fill one + other, uk/pl
+  fill one + few + many. `pick(forms, n) [:0]const u8` = the current language's form (missing -> other/many/one).
+- `fmt(buf, template, args_tuple) [:0]const u8`: `{0}`..`{9}` -> args (strings as-is, ints/floats `{d}`, types with
+  `format()` `{f}`, e.g. `kit.win.errText(err)`); other braces stay; truncated on a UTF-8 boundary. Order is free
+  (`"{1} {0}"`): translators may move placeholders.
+- `decimalSep(Lang) u8` ('.' en, ',' others) and `groupSep(Lang) []const u8` (en ",", de/es ".", uk/pl/fr
+  U+00A0): format numbers in the UI language, not the Windows locale (e.g. sizes "1,5 MB" in de).
+- `check(T, base: *const T, t: *const T, Lang) ?[]const u8` (for app tests): first bad field name: empty string,
+  plural forms not exactly the language's set, or `{N}` set different from English; walks nested structs.
+- `combo(label, auto_label, pref: *?Lang) bool`: "Auto (system)" + the six own names; on change sets `pref`, calls
+  `apply` (next frame draws the new language: no restart) and returns true -> save settings. Automation: items
+  `<name>##lang_<code>`, `<auto_label>##lang_auto`; `auto_label` comes translated from the app.
+- Never translate persisted keys (ini/registry/JSON names, CLI switches): keep a stable key, map it to a `tr()`
+  field for display. Build labels as `"{translated}##stableId"` so automation ids survive a language switch.
+- Fonts: Fira Sans subset already covers all six (Latin-1 + Ext-A/B, U+2019 apostrophe, « » „ “ ¿ ¡ œ æ ґ є і ї;
+  verified with fontTools and in the demo screenshot); U+1E9E ẞ and U+202F come from the Segoe UI fallback.
+  French: put U+00A0 before `? ! : ;` and inside « ».
