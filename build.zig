@@ -63,6 +63,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "w", .module = w_t.mod },
             // icon masters live in icons/, outside src/: @embedFile must stay inside its module
             .{ .name = "kit_icons", .module = b.createModule(.{ .root_source_file = b.path("icons/embed.zig") }) },
+            .{ .name = "kit_fonts", .module = b.createModule(.{ .root_source_file = b.path("third_party/fonts/embed.zig") }) },
         },
     });
     b.addNamedLazyPath("manifest", b.path("res/app.manifest"));

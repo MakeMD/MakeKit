@@ -21,6 +21,12 @@ const State = struct {
     info: [512]u8 = @splat(0),
     info_len: usize = 0,
     quit_asked: bool = false,
+    // compact-metrics row
+    small: [32:0]u8 = @splat(0),
+    check2: bool = true,
+    radio: c_int = 0,
+    mixed: ui.Tri = .mixed,
+    slider: c_int = 40,
 
     fn setInfo(s: *State, comptime fmt: []const u8, args: anytype) void {
         const text: []const u8 = std.mem.print(&s.info, fmt, args) catch &s.info; // truncated
@@ -151,6 +157,7 @@ fn widgets(app: *App, s: *State, sc: f32) void {
     var dpi_buf: [96]u8 = undefined;
     const dpi_text = std.mem.printSentinel(&dpi_buf, "DPI {d} ({d:.2}x){s}", .{ app.dpi, sc, if (app.warp) ", WARP" else "" }, 0) catch unreachable;
     ui.text("dpi", dpi_text, app.cfg.palette.muted, 0);
+    compactRow(s, sc);
     im.ImGui_Separator();
 
     // Tri-state checkboxes: "All" follows its children.
@@ -172,6 +179,7 @@ fn widgets(app: *App, s: *State, sc: f32) void {
     // Plain ImGui tab bar + combo: automation sees tab labels (selected = shown tab) and the combo preview.
     if (im.ImGui_BeginTabBar("tabs", im.ImGuiTabBarFlags_DrawSelectedOverline)) { // the kit tab look: mint overline
         if (im.ImGui_BeginTabItem("Options##tabOptions", null, 0)) {
+            im.ImGui_AlignTextToFramePadding(); // a checkbox that starts a frame-high line: centre it like text
             _ = ui.checkbox("Verbose log##verbose", &s.verbose);
             im.ImGui_SameLine();
             const levels = [_][*:0]const u8{ "Fast", "Normal", "Ultra" };
@@ -280,6 +288,35 @@ fn widgets(app: *App, s: *State, sc: f32) void {
     im.ImGui_Spacing();
     im.ImGui_TextDisabled("Drop files onto the window to see their paths.");
     if (s.info_len > 0) ui.text("info", s.info[0..s.info_len], null, im.ImGui_GetContentRegionAvail().x);
+}
+
+/// Every widget kind side by side: frames 24 px, check/radio boxes 14 px centred on the line, tree, slider.
+fn compactRow(s: *State, sc: f32) void {
+    im.ImGui_SeparatorText("Widgets");
+    _ = im.ImGui_Button("Button##mBtn");
+    im.ImGui_SameLine();
+    im.ImGui_SetNextItemWidth(100 * sc);
+    _ = im.ImGui_InputTextWithHint("##mInput", "Input", &s.small, s.small.len, 0);
+    im.ImGui_SameLine();
+    im.ImGui_SetNextItemWidth(100 * sc);
+    if (im.ImGui_BeginCombo("##mCombo", "Combo", 0)) im.ImGui_EndCombo();
+    im.ImGui_SameLine();
+    _ = im.ImGui_Checkbox("Check##mChk", &s.check2);
+    im.ImGui_SameLine();
+    _ = im.ImGui_RadioButtonIntPtr("Radio##mRadio0", &s.radio, 0);
+    im.ImGui_SameLine();
+    _ = im.ImGui_RadioButtonIntPtr("Other##mRadio1", &s.radio, 1);
+    im.ImGui_SameLine();
+    _ = ui.triCheckbox("Mixed##mTri", &s.mixed);
+    im.ImGui_SetNextItemWidth(160 * sc);
+    _ = im.ImGui_SliderInt("##mSlider", &s.slider, 0, 100);
+    im.ImGui_SameLine();
+    im.ImGui_TextUnformatted("\u{2116} 5 \u{20B4} \u{2192} \u{00BD} | fallback (Segoe UI): \u{0531}\u{0532} \u{10D0}\u{10D1}");
+    if (im.ImGui_TreeNodeEx("Tree node##mTree", im.ImGuiTreeNodeFlags_DefaultOpen)) {
+        _ = im.ImGui_Checkbox("Child checkbox##mChk2", &s.check2);
+        if (im.ImGui_TreeNode("Closed child##mTree2")) im.ImGui_TreePop();
+        im.ImGui_TreePop();
+    }
 }
 
 fn recycleTemp(s: *State) void {

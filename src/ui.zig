@@ -42,11 +42,9 @@ pub fn glyph(cp: u21) [4:0]u8 {
 
 // ---------------------------------------------------------------- checkboxes
 
-/// ImGui checkbox with a compact box (~20 px, not button-tall). Returns true when the user changed it.
+/// = `im.ImGui_Checkbox`, which the kit already makes compact (box = font size, centred on a frame-high
+/// line: see src/c/im.h). Returns true when the user changed it.
 pub fn checkbox(label: [*:0]const u8, v: *bool) bool {
-    const pad = im.ImGui_GetStyle().*.FramePadding;
-    im.ImGui_PushStyleVarImVec2(im.ImGuiStyleVar_FramePadding, .{ .x = pad.x, .y = @max(1, pad.y * 0.35) });
-    defer im.ImGui_PopStyleVar();
     return im.ImGui_Checkbox(label, v);
 }
 

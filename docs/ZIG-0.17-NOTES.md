@@ -872,7 +872,7 @@ Win10/11, `asInvoker` (an elevated app needs its own copy with `requireAdministr
 - New package: `zig build` prints the `.fingerprint` to put in build.zig.zon. Dependencies are fetched into
   `./zig-pkg/` (git-ignore it) and the global cache; `zig fetch --save=name <url>` adds one.
 - First build of a consumer ~30 s (builds translate-c, translates windows.h, compiles imgui); afterwards an
-  edit to a .zig file rebuilds in ~4 s. ReleaseSafe demo exe = 2.6 MB.
+  edit to a .zig file rebuilds in ~4 s. ReleaseSafe demo exe = 3.6 MB (incl. ~610 KB icons, ~267 KB fonts).
 
 ## K1. Calling COM through `w`
 
@@ -1140,9 +1140,20 @@ test "K5 ImGui widgets via im (headless frame)" {
   labels in loops need `ImGui_PushIDInt(i)` / `ImGui_PopID()`. Automation matches the full label.
 - `Begin`/`BeginChild`: always call `End`/`EndChild`; `BeginTable/BeginPopup*/BeginMenu*/BeginCombo/
   TreeNode`: call the end function only when the begin returned true.
-- Fonts (kit): Segoe UI + merged Segoe Fluent Icons/MDL2 (PUA U+E700-U+F8FF) at `style.FontSizeBase` (16);
-  1.92+ fonts are dynamic, so `ImGui_PushFontFloat(app.fonts.bold, 24)` gives a bold 24 px title; all of
-  Cyrillic renders without glyph ranges. Font glyphs: `kit.ui.icons.*` / `kit.ui.glyph(cp)`; pictures: `kit.icons` (K6).
+- Fonts (kit): embedded Fira Sans 4.203 subset (Regular = `app.fonts.regular`, SemiBold = `app.fonts.bold`;
+  Latin/Greek/Cyrillic/punctuation/currency/arrows, third_party/fonts/README.txt, rebuilt by
+  `py -3.10 tools/subset_fonts.py <src>`) + merged Segoe Fluent Icons/MDL2 (PUA U+E700-U+F8FF) + merged
+  Segoe UI (bold: Segoe UI Bold) from %WINDIR%\Fonts as the fallback for any other code point (Armenian,
+  Georgian...; CJK has no glyph in Segoe UI either -> boxes). Size `style.FontSizeBase` = `Config.font_size` (14).
+  Embedded TTFs go in with `FontDataOwnedByAtlas = false` (the atlas frees owned data). 1.92+ fonts are
+  dynamic: `ImGui_PushFontFloat(app.fonts.bold, 24)` = a 24 px title. ImGui does no kerning/ligatures.
+  Font glyphs: `kit.ui.icons.*` / `kit.ui.glyph(cp)`; pictures: `kit.icons` (K6).
+- Metrics at 96 DPI: frames (button, input, combo, tab, slider) 24 px = 14 + FramePadding.y 5 x 2, text
+  table rows 22 px (CellPadding.y 4), ItemSpacing 8/6, IndentSpacing 16, scrollbar 12. Check/radio boxes are
+  14 px: `src/c/im.h` renames `im.ImGui_Checkbox`, `CheckboxFlags*`, `RadioButton*` to `mkui_*` wrappers
+  (src/te_hooks.cpp, FramePadding.y = 0) that move the box down to the line's text baseline, so it is centred
+  on a frame-high line after `SameLine()`; a checkbox that STARTS such a line needs
+  `ImGui_AlignTextToFramePadding()` first (like text). The combo arrow button stays a frame-high square (ImGui).
 - DPI: the kit sets `style.FontScaleDpi` + `ScaleAllSizes` on WM_DPICHANGED; app code uses logical px
   multiplied by `app.scale()` for explicit sizes.
 - `IM_ASSERT` is always on and never shows the CRT dialog: it prints the expression plus a Zig/C++
@@ -1196,7 +1207,7 @@ anthracite `bg` 0x2D3436; text ON mint = `bg`; a test keeps every text/backgroun
 app-drawn chrome. The native title bar is dark (DWMWA_USE_IMMERSIVE_DARK_MODE, Win11 caption = `bg`).
 `MAKEKIT_DISPLAY=\\.\DISPLAY1` centers the window on that monitor and shows it without activation.
 
-Widgets (`kit.ui`): `checkbox(label, *bool)` (compact box), `triCheckbox(label, *Tri)` (`.off/.on/.mixed`,
+Widgets (`kit.ui`): `checkbox(label, *bool)` (= the compact `im.ImGui_Checkbox`, K5), `triCheckbox(label, *Tri)` (`.off/.on/.mixed`,
 same box), `text(id, text, ?0xRRGGBB, wrap_w)` (TextUnformatted that automation can read: item
 `<text>##<id>`, value = text; `wrap_w` 0 = no wrap), `openMessage(id)` + `messageBox(id, kind, text,
 buttons) ?usize` / `messageBoxEx(..., .{ .width = 480 })` (Enter = 0, Esc = last; items `<text>##msgText`,

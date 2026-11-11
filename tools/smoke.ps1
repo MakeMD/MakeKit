@@ -28,6 +28,12 @@ try {
     Check ((Get-AutoText $app '##dpi') -like 'DPI *') 'kit.ui.text is readable (Get-AutoText ##dpi)'
     Check ((Get-AutoText $app '##iconCount') -eq '39 icons') 'icon grid drawn (kit.icons)'
 
+    # compact check/radio boxes: smaller than a frame and centred on a frame-high line (SameLine / AlignTextToFramePadding)
+    foreach ($pair in @(@('Button##mBtn', 'Check##mChk'), @('Button##mBtn', 'Radio##mRadio0'), @('Level##lvl', 'Verbose log##verbose'))) {
+        $f = Wait-AutoItem $app $pair[0]; $c = Wait-AutoItem $app $pair[1]
+        Check (($c.y1 - $c.y0) -lt ($f.y1 - $f.y0) -and [math]::Abs(($c.y0 + $c.y1) - ($f.y0 + $f.y1)) -le 1) "$($pair[1]) compact and centred on $($pair[0])"
+    }
+
     # tri-state: "All" starts mixed; unchecking a child keeps it mixed (unchecked from ImGui's view)
     Check (Wait-AutoItem $app 'All##all').mixed 'All##all is mixed'
     Check (-not (Wait-AutoItem $app 'Documents##c1').mixed) 'Documents##c1 is not mixed'

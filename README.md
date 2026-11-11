@@ -1,7 +1,7 @@
 # MakeKit
 
 Shared Zig 0.17.1 foundation for MakeCleaner and MakePack: Win32 window + D3D11 + Dear ImGui 1.93 (docking) with
-an idle-friendly loop, the "Carbon Mint" dark theme + 39-icon set (`icons`, masters in icons/), fonts/DPI, small widgets (`ui`), Win32/COM helpers (`win`), background jobs (`jobs`),
+an idle-friendly loop, the "Carbon Mint" dark theme + 39-icon set (`icons`, masters in icons/), the embedded Fira Sans UI font (third_party/fonts, OFL) + compact metrics/DPI, small widgets (`ui`), Win32/COM helpers (`win`), background jobs (`jobs`),
 translated Windows headers (`w`), the dear_bindings ImGui C API (`im`) and a named-pipe GUI automation server.
 
 - Use it: in your `build.zig.zon` add `.makekit = .{ .path = "../MakeKit" }`, then in `build.zig`

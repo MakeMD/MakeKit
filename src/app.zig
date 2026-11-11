@@ -6,6 +6,7 @@ const w = @import("w");
 const win = @import("win.zig");
 const automation = @import("automation.zig");
 const kit_icons = @import("icons.zig");
+const kit_fonts = @import("kit_fonts");
 
 const Allocator = std.mem.Allocator;
 
@@ -161,11 +162,15 @@ pub fn applyTheme(style: *im.ImGuiStyle, p: Palette) void {
     s(c, im.ImGuiCol_NavWindowingDimBg, color(0x000000, 0.45));
     s(c, im.ImGuiCol_ModalWindowDimBg, color(0x000000, 0.45));
 
+    // Compact metrics for the 14 px base font (96 DPI; ScaleAllSizes on DPI change): frames (buttons,
+    // inputs, combos, tabs) 24 px, check/radio boxes 14 px (im.h -> mkui_* wrappers), text table rows 22 px.
     style.WindowPadding = .{ .x = 12, .y = 12 };
-    style.FramePadding = .{ .x = 10, .y = 6 };
-    style.ItemSpacing = .{ .x = 8, .y = 8 };
+    style.FramePadding = .{ .x = 8, .y = 5 };
+    style.ItemSpacing = .{ .x = 8, .y = 6 };
     style.ItemInnerSpacing = .{ .x = 6, .y = 6 };
-    style.CellPadding = .{ .x = 8, .y = 5 };
+    style.CellPadding = .{ .x = 8, .y = 4 };
+    style.IndentSpacing = 16;
+    style.GrabMinSize = 10;
     style.WindowRounding = 4;
     style.ChildRounding = 4;
     style.FrameRounding = 4;
@@ -191,8 +196,8 @@ pub const Config = struct {
     size: [2]i32 = .{ 1100, 720 },
     min_size: [2]i32 = .{ 640, 420 },
     palette: Palette = palettes.carbon,
-    /// Base font size in logical pixels.
-    font_size: f32 = 16,
+    /// Base font size in logical pixels (Fira Sans has a large x-height: 14 reads like Segoe UI 15-16).
+    font_size: f32 = 14,
     /// Icon resource id from the app's .rc (`1 ICON "app.ico"` -> 1). null = default icon.
     icon_id: ?u16 = null,
     /// imgui.ini path (UTF-8); null = do not persist ImGui window state.
@@ -214,7 +219,7 @@ pub const Callbacks = struct {
 
 pub const Fonts = struct {
     regular: *im.ImFont,
-    /// Segoe UI Bold (falls back to regular). Use `ImGui_PushFontFloat(app.fonts.bold, size)` for titles.
+    /// Fira Sans SemiBold. Use `ImGui_PushFontFloat(app.fonts.bold, size)` for titles.
     bold: *im.ImFont,
     /// True when the icon font (Segoe Fluent Icons / MDL2 Assets) was merged into both fonts.
     icons: bool,
@@ -597,6 +602,8 @@ fn targetMonitor(gpa: Allocator) ?w.RECT {
 
 const icon_ranges = [_]im.ImWchar{ 0xE700, 0xF8FF, 0 };
 
+/// Embedded Fira Sans (Regular / SemiBold) + merged Segoe Fluent/MDL2 icons (PUA) + merged Segoe UI as the
+/// fallback for everything the Fira subset lacks (merged sources are searched in order, baselines aligned).
 fn loadFonts(size: f32) Fonts {
     const atlas = im.ImGui_GetIO().*.Fonts;
     var dir_w: [260]u16 = undefined;
@@ -605,12 +612,32 @@ fn loadFonts(size: f32) Fonts {
     const dir_len = std.unicode.wtf16LeToWtf8(&dir_buf, dir_w[0..n]);
     const dir = dir_buf[0..dir_len];
 
-    var icons = false;
-    const regular = addFont(atlas, dir, "segoeui.ttf", size) orelse im.ImFontAtlas_AddFontDefault(atlas, null);
-    icons = mergeIcons(atlas, dir, size);
-    const bold = addFont(atlas, dir, "segoeuib.ttf", size) orelse regular;
-    if (bold != regular) _ = mergeIcons(atlas, dir, size);
+    const regular = addEmbedded(atlas, kit_fonts.regular, size);
+    const icons = mergeIcons(atlas, dir, size);
+    mergeFallback(atlas, dir, "segoeui.ttf", size);
+    const bold = addEmbedded(atlas, kit_fonts.semibold, size);
+    _ = mergeIcons(atlas, dir, size);
+    mergeFallback(atlas, dir, "segoeuib.ttf", size);
     return .{ .regular = regular, .bold = bold, .icons = icons };
+}
+
+/// C++ `ImFontConfig()` defaults (dear_bindings has no constructor).
+fn fontConfig(merge: bool) im.ImFontConfig {
+    var cfg = std.mem.zeroes(im.ImFontConfig);
+    cfg.FontDataOwnedByAtlas = true;
+    cfg.GlyphMaxAdvanceX = std.math.floatMax(f32);
+    cfg.RasterizerMultiply = 1;
+    cfg.RasterizerDensity = 1;
+    cfg.ExtraSizeScale = 1;
+    cfg.MergeMode = merge;
+    return cfg;
+}
+
+fn addEmbedded(atlas: *im.ImFontAtlas, ttf: []const u8, size: f32) *im.ImFont {
+    var cfg = fontConfig(false);
+    cfg.FontDataOwnedByAtlas = false; // static data: the atlas must not free it
+    const f: ?*im.ImFont = im.ImFontAtlas_AddFontFromMemoryTTF(atlas, @constCast(ttf.ptr), @intCast(ttf.len), size, &cfg, null);
+    return f.?; // ponytail: the embedded TTF is known-good; a bad one asserts inside ImGui first
 }
 
 fn fontPath(buf: []u8, dir: []const u8, file: []const u8) ?[:0]const u8 {
@@ -622,25 +649,21 @@ fn fontPath(buf: []u8, dir: []const u8, file: []const u8) ?[:0]const u8 {
     return p;
 }
 
-fn addFont(atlas: *im.ImFontAtlas, dir: []const u8, file: []const u8, size: f32) ?*im.ImFont {
+/// Merges a %WINDIR%\Fonts face (all its glyphs) into the last font; used only for code points earlier sources lack.
+fn mergeFallback(atlas: *im.ImFontAtlas, dir: []const u8, file: []const u8, size: f32) void {
     var buf: [600]u8 = undefined;
-    const p = fontPath(&buf, dir, file) orelse return null;
-    return im.ImFontAtlas_AddFontFromFileTTF(atlas, p.ptr, size, null, null);
+    const p = fontPath(&buf, dir, file) orelse return;
+    var cfg = fontConfig(true);
+    _ = im.ImFontAtlas_AddFontFromFileTTF(atlas, p.ptr, size, &cfg, null);
 }
 
 /// Merges Segoe Fluent Icons (Win11) or Segoe MDL2 Assets (Win10) PUA glyphs into the last font.
 fn mergeIcons(atlas: *im.ImFontAtlas, dir: []const u8, size: f32) bool {
     var buf: [600]u8 = undefined;
     const p = fontPath(&buf, dir, "SegoeIcons.ttf") orelse fontPath(&buf, dir, "segmdl2.ttf") orelse return false;
-    var cfg = std.mem.zeroes(im.ImFontConfig); // = C++ ImFontConfig() defaults below
-    cfg.FontDataOwnedByAtlas = true;
-    cfg.GlyphMaxAdvanceX = std.math.floatMax(f32);
-    cfg.RasterizerMultiply = 1;
-    cfg.RasterizerDensity = 1;
-    cfg.ExtraSizeScale = 1;
-    cfg.MergeMode = true;
+    var cfg = fontConfig(true);
     cfg.GlyphRanges = &icon_ranges;
-    cfg.GlyphOffset = .{ .x = 0, .y = 2 }; // MDL2/Fluent glyphs sit high next to Segoe UI text
+    cfg.GlyphOffset = .{ .x = 0, .y = 2 }; // MDL2/Fluent glyphs sit high next to the text
     return im.ImFontAtlas_AddFontFromFileTTF(atlas, p.ptr, size, &cfg, null) != null; // size = reference for GlyphOffset (fonts stay dynamic)
 }
 

@@ -243,4 +243,33 @@ bool mkte_InputTextWithHintEx(const char* label, const char* hint, char* buf, si
     return r;
 }
 bool mkte_InputTextWithHint(const char* label, const char* hint, char* buf, size_t buf_size, ImGuiInputTextFlags flags) { return mkte_InputTextWithHintEx(label, hint, buf, buf_size, flags, nullptr, nullptr); }
+} // extern "C"
+
+// ---- Compact check/radio boxes (src/c/im.h renames im.ImGui_Checkbox* / RadioButton* to these): FramePadding.y = 0
+// makes the box font-size square. ImGui draws them at the line top; on a line whose text baseline is already
+// pushed down (a frame widget before it on the line, or AlignTextToFramePadding) the box moves down to that
+// baseline, i.e. centred on a frame-high line, and the line keeps its height (ItemSize from the line top).
+template <class F> static bool compact(F draw)
+{
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems) return false;
+    const float off = window->DC.CurrLineTextBaseOffset;
+    if (off > 0.0f) {
+        if (!window->DC.IsSameLine) { // first item of the line: measure the line from its real top
+            window->DC.IsSameLine = true;
+            window->DC.CursorPosPrevLine.y = window->DC.CursorPos.y;
+        }
+        window->DC.CursorPos.y += off;
+    }
+    ImGui::PushStyleVarY(ImGuiStyleVar_FramePadding, 0.0f);
+    const bool r = draw();
+    ImGui::PopStyleVar();
+    return r;
+}
+extern "C" {
+bool mkui_Checkbox(const char* label, bool* v) { return compact([&] { return ImGui::Checkbox(label, v); }); }
+bool mkui_CheckboxFlagsIntPtr(const char* label, int* flags, int flags_value) { return compact([&] { return ImGui::CheckboxFlags(label, flags, flags_value); }); }
+bool mkui_CheckboxFlagsUintPtr(const char* label, unsigned int* flags, unsigned int flags_value) { return compact([&] { return ImGui::CheckboxFlags(label, flags, flags_value); }); }
+bool mkui_RadioButton(const char* label, bool active) { return compact([&] { return ImGui::RadioButton(label, active); }); }
+bool mkui_RadioButtonIntPtr(const char* label, int* v, int v_button) { return compact([&] { return ImGui::RadioButton(label, v, v_button); }); }
 }

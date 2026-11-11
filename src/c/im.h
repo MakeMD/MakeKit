@@ -16,4 +16,12 @@
 #define ImGui_InputTextWithHint mkte_InputTextWithHint
 #define ImGui_InputTextWithHintEx mkte_InputTextWithHintEx
 
+/* Compact check/radio boxes (src/te_hooks.cpp): box = font size, not frame height; centred on a line that
+   already holds frame-high widgets (after SameLine or AlignTextToFramePadding). */
+#define ImGui_Checkbox mkui_Checkbox
+#define ImGui_CheckboxFlagsIntPtr mkui_CheckboxFlagsIntPtr
+#define ImGui_CheckboxFlagsUintPtr mkui_CheckboxFlagsUintPtr
+#define ImGui_RadioButton mkui_RadioButton
+#define ImGui_RadioButtonIntPtr mkui_RadioButtonIntPtr
+
 #include "dcimgui.h"
