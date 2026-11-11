@@ -25,3 +25,7 @@
 #define ImGui_RadioButtonIntPtr mkui_RadioButtonIntPtr
 
 #include "dcimgui.h"
+
+/* Kit drop arrow (src/te_hooks.cpp; kit.ui.dropArrow); last check/radio label cut with "..." (kit.ui.checkboxTooltip). */
+bool mkui_DropArrow(const char* label, bool open);
+bool mkui_LabelCut(void);

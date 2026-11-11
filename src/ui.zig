@@ -74,6 +74,38 @@ pub fn triCheckbox(label: [*:0]const u8, state: *Tri) bool {
     return changed;
 }
 
+/// Right after `checkbox` / `triCheckbox` (whose label is drawn cut with "..." when wider than the window):
+/// on hover, a tooltip with the whole visible label if it was cut, then `extra` (e.g. a warning; null = none).
+pub fn checkboxTooltip(label: [*:0]const u8, extra: ?[]const u8) void {
+    const cut = im.mkui_LabelCut();
+    if (!cut and extra == null) return;
+    if (!im.ImGui_IsItemHovered(im.ImGuiHoveredFlags_ForTooltip) or !im.ImGui_BeginTooltip()) return;
+    defer im.ImGui_EndTooltip();
+    if (cut) {
+        const l = std.mem.span(label);
+        const shown = l[0 .. std.mem.find(u8, l, "##") orelse l.len];
+        im.ImGui_TextUnformattedEx(shown.ptr, shown.ptr + shown.len);
+    }
+    if (extra) |e| {
+        if (cut) im.ImGui_Separator();
+        im.ImGui_TextUnformattedEx(e.ptr, e.ptr + e.len);
+    }
+}
+
+// ---------------------------------------------------------------- drop arrow
+
+/// The kit combo's chevron as a narrow frame-coloured button (`dropArrowWidth()` x frame height) for a
+/// custom drop-down: after `SameLineEx(0, 0)` right of an input box it joins the box (one frame). `open` =
+/// your popup is open (chevron up). Returns true when clicked. NoPreview combos draw the same.
+pub fn dropArrow(label: [*:0]const u8, open: bool) bool {
+    return im.mkui_DropArrow(label, open);
+}
+
+/// Width of `dropArrow` / the chevron zone of a combo (font size + FramePadding.x: 22 px at 96 DPI).
+pub fn dropArrowWidth() f32 {
+    return im.ImGui_GetFontSize() + im.ImGui_GetStyle().*.FramePadding.x;
+}
+
 // ---------------------------------------------------------------- automation-readable text
 
 /// TextUnformatted that automation can read: item "<text>##<id>" with `value` = the full text (plain text

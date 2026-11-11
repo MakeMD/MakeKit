@@ -207,31 +207,93 @@ bool mkte_SelectableBoolPtrEx(const char* label, bool* p_selected, ImGuiSelectab
 bool mkte_SelectableBoolPtr(const char* label, bool* p_selected, ImGuiSelectableFlags flags) { return mkte_SelectableBoolPtrEx(label, p_selected, flags, MkVec2{0, 0}); }
 
 // Kit look: ImGui's frame-high arrow square is replaced by a thin chevron in a narrow zone of a uniform frame
-// (ImGui draws the frame with NoArrowButton and no preview; the preview + chevron are drawn here). Callers that
-// pass NoArrowButton / NoPreview / WidthFitPreview themselves get ImGui's own combo.
-static void drawCombo(ImGuiWindow* win, const ImRect& bb, const char* preview, bool hot, bool open)
+// (ImGui draws the frame with NoArrowButton and no preview; the preview + chevron are drawn here). NoPreview
+// combos are a drop arrow (mkui_DropArrow) + ImGui's combo popup. Callers that pass NoArrowButton /
+// WidthFitPreview themselves get ImGui's own combo.
+static float chevronZone() { return GImGui->FontSize + GImGui->Style.FramePadding.x; } // 22 px at 96 DPI (font 14 + padding 8)
+
+// Chevron: 8 x 4 px, 1.5 px stroke at font 14; centred in the zone at the right of bb, points up while open.
+static void drawChevron(ImDrawList* dl, const ImRect& bb, bool hot, bool open)
 {
-    ImGuiContext& g = *GImGui;
-    const ImGuiStyle& st = g.Style;
-    const float fs = g.FontSize;
-    const float zone = fs + st.FramePadding.x; // 22 px at 96 DPI (font 14 + padding 8)
-    ImDrawList* dl = win->DrawList;            // the combo's window, not the popup that BeginCombo may have begun
-    if (preview && *preview)
-        ImGui::RenderTextEllipsis(dl, ImVec2(bb.Min.x + st.FramePadding.x, bb.Min.y + st.FramePadding.y), ImVec2(bb.Max.x - zone, bb.Max.y), bb.Max.x - zone, preview, nullptr, nullptr);
-    // Chevron: 8 x 4 px, 1.5 px stroke at font 14; centred in the zone, points up while the popup is open.
+    const float fs = GImGui->FontSize;
     const float hw = IM_ROUND(fs * (4.0f / 14.0f)), hh = IM_ROUND(fs * (2.0f / 14.0f)), th = fs * (1.5f / 14.0f);
-    const float cx = IM_TRUNC(bb.Max.x - zone * 0.5f) + 0.5f, cy = IM_TRUNC((bb.Min.y + bb.Max.y) * 0.5f) + 0.5f;
+    const float cx = IM_TRUNC(bb.Max.x - chevronZone() * 0.5f) + 0.5f, cy = IM_TRUNC((bb.Min.y + bb.Max.y) * 0.5f) + 0.5f;
     const float d = open ? -hh : hh;
     const ImVec2 pts[3] = { ImVec2(cx - hw, cy - d), ImVec2(cx, cy + d), ImVec2(cx + hw, cy - d) };
     dl->AddPolyline(pts, 3, ImGui::GetColorU32(hot ? ImGuiCol_Text : ImGuiCol_TextDisabled), th);
 }
+
+static void drawCombo(ImGuiWindow* win, const ImRect& bb, const char* preview, bool hot, bool open)
+{
+    const ImGuiStyle& st = GImGui->Style;
+    const float zone = chevronZone();
+    ImDrawList* dl = win->DrawList; // the combo's window, not the popup that BeginCombo may have begun
+    if (preview && *preview)
+        ImGui::RenderTextEllipsis(dl, ImVec2(bb.Min.x + st.FramePadding.x, bb.Min.y + st.FramePadding.y), ImVec2(bb.Max.x - zone, bb.Max.y), bb.Max.x - zone, preview, nullptr, nullptr);
+    drawChevron(dl, bb, hot, open);
+}
+
+// Narrow frame-coloured button (chevron zone x frame height) with the chevron. Right after a frame item with
+// SameLine(0, 0) (an editable box) it joins it: one frame, no seam. *joined = the whole box (for the popup).
+static bool dropArrow(const char* label, bool open, ImRect* joined)
+{
+    ImGuiContext& g = *GImGui;
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    if (win->SkipItems) return false;
+    const ImGuiStyle& st = g.Style;
+    const ImRect prev = g.LastItemData.Rect;
+    const ImVec2 pos = win->DC.CursorPos;
+    const ImRect bb(pos, ImVec2(pos.x + chevronZone(), pos.y + ImGui::GetFrameHeight()));
+    const bool attached = win->DC.IsSameLine && ImFabs(prev.Max.x - pos.x) < 0.5f && ImFabs(prev.Min.y - pos.y) < 0.5f && ImFabs(prev.Max.y - bb.Max.y) < 0.5f;
+    const ImGuiID id = win->GetID(label);
+    ImGui::ItemSize(bb, st.FramePadding.y);
+    if (!ImGui::ItemAdd(bb, id)) return false;
+    bool hovered, held;
+    const bool pressed = ImGui::ButtonBehavior(bb, id, &hovered, &held);
+    const ImU32 col = ImGui::GetColorU32(hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+    ImGui::RenderNavCursor(bb, id);
+    if (attached) {
+        // Cover the box's rounded right corners and right border; draw our border without its left edge.
+        const float r = st.FrameRounding, bs = st.FrameBorderSize;
+        const ImVec2 a(prev.Max.x - r, bb.Min.y);
+        win->DrawList->AddRectFilled(a, bb.Max, col, r, ImDrawFlags_RoundRight);
+        if (bs > 0.0f) {
+            win->DrawList->PushClipRect(a, bb.Max, true);
+            win->DrawList->AddRect(ImVec2(a.x - r - bs - 1.0f, a.y), bb.Max, ImGui::GetColorU32(ImGuiCol_Border), r, bs, ImDrawFlags_RoundRight);
+            win->DrawList->PopClipRect();
+        }
+    } else {
+        ImGui::RenderFrame(bb.Min, bb.Max, col, true, st.FrameRounding);
+    }
+    drawChevron(win->DrawList, bb, hovered || open, open);
+    mkte_tag(id, label, nullptr, 0, ImGuiItemStatusFlags_Openable | (open ? ImGuiItemStatusFlags_Opened : 0), 1);
+    if (joined) *joined = attached ? ImRect(prev.Min, bb.Max) : bb;
+    return pressed;
+}
+
+bool mkui_DropArrow(const char* label, bool open) { return dropArrow(label, open, nullptr); }
 
 bool mkte_BeginCombo(const char* label, const char* preview_value, ImGuiComboFlags flags)
 {
     ImGuiContext& g = *GImGui;
     ImGuiWindow* win = ImGui::GetCurrentWindow();
     const ImGuiID id = ImGui::GetID(label);
-    const bool custom = !(flags & (ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_NoPreview | ImGuiComboFlags_WidthFitPreview));
+    if ((flags & ImGuiComboFlags_NoPreview) && !(flags & ImGuiComboFlags_NoArrowButton)) {
+        // ponytail: a visible label of a NoPreview combo is not drawn (kit apps use "##id")
+        const ImGuiID popup_id = ImHashStr("##ComboPopup", 0, id);
+        bool open = ImGui::IsPopupOpen(popup_id, ImGuiPopupFlags_None);
+        ImRect box;
+        const bool pressed = dropArrow(label, open, &box);
+        if (box.GetWidth() <= 0.0f) { // skipped / clipped: like BeginCombo, drop SetNextWindow* data
+            g.NextWindowData.ClearFlags();
+            return false;
+        }
+        if (pressed && !open) ImGui::OpenPopupEx(popup_id, ImGuiPopupFlags_None);
+        open = ImGui::BeginComboPopup(popup_id, box, flags); // clears SetNextWindow* data when closed
+        mkte_tag(id, label, preview_value, -1, open ? ImGuiItemStatusFlags_Opened : 0, 0);
+        return open;
+    }
+    const bool custom = !(flags & (ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_WidthFitPreview));
     g.ComboPreviewData.PreviewRect = ImRect(); // set by BeginCombo only when the item is submitted (not clipped)
     const bool open = custom ? ImGui::BeginCombo(label, nullptr, flags | ImGuiComboFlags_NoArrowButton)
                              : ImGui::BeginCombo(label, preview_value, flags);
@@ -276,8 +338,12 @@ bool mkte_InputTextWithHint(const char* label, const char* hint, char* buf, size
 // makes the box font-size square. ImGui draws them at the line top; on a line whose text baseline is already
 // pushed down (a frame widget before it on the line, or AlignTextToFramePadding) the box moves down to that
 // baseline, i.e. centred on a frame-high line, and the line keeps its height (ItemSize from the line top).
-template <class F> static bool compact(F draw)
+// A label wider than the window is drawn cut with "..." (ImGui would clip it mid-glyph): ImGui draws it invisible,
+// so the item keeps its full width for clicks; mkui_LabelCut() tells kit.ui.checkboxTooltip to show it whole.
+static bool g_label_cut = false;
+template <class F> static bool compact(const char* label, F draw)
 {
+    ImGuiContext& g = *GImGui;
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems) return false;
     const float off = window->DC.CurrLineTextBaseOffset;
@@ -288,15 +354,28 @@ template <class F> static bool compact(F draw)
         }
         window->DC.CursorPos.y += off;
     }
+    const char* end = ImGui::FindRenderedTextEnd(label);
+    const float x = window->DC.CursorPos.x + g.FontSize + g.Style.ItemInnerSpacing.x; // box = font size (FramePadding.y 0)
+    const float x_max = window->WorkRect.Max.x; // right edge of the content area (table cell, child, window)
+    g_label_cut = end > label && x + ImGui::CalcTextSize(label, end).x > x_max;
+    if (g_label_cut) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleVarY(ImGuiStyleVar_FramePadding, 0.0f);
     const bool r = draw();
     ImGui::PopStyleVar();
+    if (g_label_cut) {
+        ImGui::PopStyleColor();
+        if (g.LastItemData.StatusFlags & ImGuiItemStatusFlags_Visible) {
+            const float y = g.LastItemData.Rect.Min.y;
+            ImGui::RenderTextEllipsis(window->DrawList, ImVec2(x, y), ImVec2(x_max, y + g.FontSize), x_max, label, end, nullptr);
+        }
+    }
     return r;
 }
 extern "C" {
-bool mkui_Checkbox(const char* label, bool* v) { return compact([&] { return ImGui::Checkbox(label, v); }); }
-bool mkui_CheckboxFlagsIntPtr(const char* label, int* flags, int flags_value) { return compact([&] { return ImGui::CheckboxFlags(label, flags, flags_value); }); }
-bool mkui_CheckboxFlagsUintPtr(const char* label, unsigned int* flags, unsigned int flags_value) { return compact([&] { return ImGui::CheckboxFlags(label, flags, flags_value); }); }
-bool mkui_RadioButton(const char* label, bool active) { return compact([&] { return ImGui::RadioButton(label, active); }); }
-bool mkui_RadioButtonIntPtr(const char* label, int* v, int v_button) { return compact([&] { return ImGui::RadioButton(label, v, v_button); }); }
+bool mkui_Checkbox(const char* label, bool* v) { return compact(label, [&] { return ImGui::Checkbox(label, v); }); }
+bool mkui_CheckboxFlagsIntPtr(const char* label, int* flags, int flags_value) { return compact(label, [&] { return ImGui::CheckboxFlags(label, flags, flags_value); }); }
+bool mkui_CheckboxFlagsUintPtr(const char* label, unsigned int* flags, unsigned int flags_value) { return compact(label, [&] { return ImGui::CheckboxFlags(label, flags, flags_value); }); }
+bool mkui_RadioButton(const char* label, bool active) { return compact(label, [&] { return ImGui::RadioButton(label, active); }); }
+bool mkui_RadioButtonIntPtr(const char* label, int* v, int v_button) { return compact(label, [&] { return ImGui::RadioButton(label, v, v_button); }); }
+bool mkui_LabelCut(void) { return g_label_cut; }
 }

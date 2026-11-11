@@ -1153,12 +1153,17 @@ test "K5 ImGui widgets via im (headless frame)" {
   14 px: `src/c/im.h` renames `im.ImGui_Checkbox`, `CheckboxFlags*`, `RadioButton*` to `mkui_*` wrappers
   (src/te_hooks.cpp, FramePadding.y = 0) that move the box down to the line's text baseline, so it is centred
   on a frame-high line after `SameLine()`; a checkbox that STARTS such a line needs
-  `ImGui_AlignTextToFramePadding()` first (like text). Combos: the `mkte_BeginCombo` wrapper (src/te_hooks.cpp)
+  `ImGui_AlignTextToFramePadding()` first (like text). A check/radio label wider than the window's work rect is
+  drawn cut with "..." (the item keeps its full width, so the whole row stays clickable);
+  `kit.ui.checkboxTooltip(label, extra)` right after shows it whole on hover, plus `extra` (a warning). Combos: the `mkte_BeginCombo` wrapper (src/te_hooks.cpp)
   calls ImGui with `NoArrowButton` + no preview and draws the preview itself (ellipsis, clipped before a
   22 px = font + FramePadding.x right zone) and a thin chevron (8 x 4 px, 1.5 px stroke at 96 DPI, scales with
   the font; TextDisabled colour, Text on hover/open, points up while open) on a uniform frame; the whole frame
-  opens it. Combos that pass `NoArrowButton`, `NoPreview` or `WidthFitPreview` get ImGui's own look (frame-high
-  arrow square for `NoPreview`).
+  opens it. `NoPreview` combos are `kit.ui.dropArrow` (below) + ImGui's combo popup (their visible label is not
+  drawn: use `"##id"`). Combos that pass `NoArrowButton` or `WidthFitPreview` get ImGui's own look.
+- `kit.ui.dropArrow(label, open) bool`: that chevron on a frame-coloured button `kit.ui.dropArrowWidth()`
+  (= the 22 px zone) x frame height, for a custom drop-down; after `SameLineEx(0, 0)` right of a frame item of
+  the same height (an input box) it joins it (one frame, no seam; a NoPreview combo's popup then spans the box).
 - DPI: the kit sets `style.FontScaleDpi` + `ScaleAllSizes` on WM_DPICHANGED; app code uses logical px
   multiplied by `app.scale()` for explicit sizes.
 - `IM_ASSERT` is always on and never shows the CRT dialog: it prints the expression plus a Zig/C++
@@ -1213,7 +1218,7 @@ app-drawn chrome. The native title bar is dark (DWMWA_USE_IMMERSIVE_DARK_MODE, W
 `MAKEKIT_DISPLAY=\\.\DISPLAY1` centers the window on that monitor and shows it without activation.
 
 Widgets (`kit.ui`): `checkbox(label, *bool)` (= the compact `im.ImGui_Checkbox`, K5), `triCheckbox(label, *Tri)` (`.off/.on/.mixed`,
-same box), `text(id, text, ?0xRRGGBB, wrap_w)` (TextUnformatted that automation can read: item
+same box), `checkboxTooltip(label, ?extra)` (K5), `dropArrow(label, open) bool` + `dropArrowWidth()` (K5), `text(id, text, ?0xRRGGBB, wrap_w)` (TextUnformatted that automation can read: item
 `<text>##<id>`, value = text; `wrap_w` 0 = no wrap), `openMessage(id)` + `messageBox(id, kind, text,
 buttons) ?usize` / `messageBoxEx(..., .{ .width = 480 })` (Enter = 0, Esc = last; items `<text>##msgText`,
 `<button>##msgButton<i>`; no close X on purpose: Esc = last button; kinds `.info/.question/.warning/.err/.danger`, picture
