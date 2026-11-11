@@ -10,6 +10,26 @@ const w = @import("w");
 const win = @import("win.zig");
 const app = @import("app.zig");
 
+/// `n` moved back so `buf[0..n]` does not end inside a UTF-8 sequence (a cut message stays valid text).
+fn utf8Cut(buf: []const u8, n: usize) usize {
+    var i = n;
+    while (i > 0 and i + 4 > n) : (i -= 1) {
+        const c = buf[i - 1];
+        if (c & 0xC0 == 0x80) continue; // continuation byte: the lead is further back
+        const len = std.unicode.utf8ByteSequenceLength(c) catch return n;
+        return if (i - 1 + len <= n) n else i - 1;
+    }
+    return n;
+}
+
+test utf8Cut {
+    const s = "a\u{0416}b"; // a, a 2-byte letter, b
+    try std.testing.expectEqual(1, utf8Cut(s, 2));
+    try std.testing.expectEqual(3, utf8Cut(s, 3));
+    try std.testing.expectEqual(4, utf8Cut(s, 4));
+    try std.testing.expectEqual(0, utf8Cut(s, 0));
+}
+
 pub const Job = struct {
     cancel_flag: std.atomic.Value(bool) = .init(false),
     finished_flag: std.atomic.Value(bool) = .init(false),
@@ -19,7 +39,7 @@ pub const Job = struct {
     lock: win.Lock = .{},
     status_buf: [256]u8 = undefined,
     status_len: usize = 0,
-    err_buf: [256]u8 = undefined,
+    err_buf: [512]u8 = undefined, // a localized Windows message in Ukrainian runs to ~200 bytes
     err_len: usize = 0,
     thread: ?std.Thread = null,
     /// Caller's context for the worker (`job.ctx(T)`).
@@ -45,7 +65,7 @@ pub const Job = struct {
 
     fn run(job: *Job) void {
         job.func(job) catch |e| {
-            if (e != error.Canceled) job.fail("{t}", .{e});
+            if (e != error.Canceled) job.fail("{f}", .{win.errText(e)}); // Windows' words, not the Zig name
         };
         job.finished_flag.store(true, .release);
         app.wakeGlobal(); // always deliver the final state
@@ -93,8 +113,9 @@ pub const Job = struct {
     pub fn fail(job: *Job, comptime fmt: []const u8, args: anytype) void {
         job.lock.lock();
         defer job.lock.unlock();
-        const text: []const u8 = std.mem.print(&job.err_buf, fmt, args) catch &job.err_buf;
-        job.err_len = text.len;
+        var wr: std.Io.Writer = .fixed(&job.err_buf);
+        wr.print(fmt, args) catch {}; // too long: cut
+        job.err_len = utf8Cut(&job.err_buf, wr.buffered().len);
     }
 
     /// UI: copy of the status line into `buf`.
@@ -111,7 +132,7 @@ pub const Job = struct {
         job.lock.lock();
         defer job.lock.unlock();
         if (job.err_len == 0) return null;
-        const n = @min(buf.len, job.err_len);
+        const n = utf8Cut(&job.err_buf, @min(buf.len, job.err_len));
         @memcpy(buf[0..n], job.err_buf[0..n]);
         return buf[0..n];
     }

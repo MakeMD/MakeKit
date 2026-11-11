@@ -41,6 +41,55 @@ pub fn check(hr: w.HRESULT) error{ComFailed}!void {
 
 pub const E_CANCELLED: w.HRESULT = @bitCast(@as(u32, 0x800704C7)); // HRESULT_FROM_WIN32(ERROR_CANCELLED)
 
+/// std's file/OS errors -> the Win32 code whose system message says the same; null = no such code.
+pub fn errorCode(err: anyerror) ?u32 {
+    return switch (err) {
+        error.FileNotFound => 2,
+        error.AccessDenied, error.PermissionDenied => 5,
+        error.FileBusy => 32,
+        error.PathAlreadyExists => 183,
+        error.NoSpaceLeft => 112,
+        error.DiskQuota => 1295,
+        error.NameTooLong => 206,
+        error.BadPathName => 123,
+        error.NotDir => 267,
+        error.DirNotEmpty => 145,
+        error.OutOfMemory, error.SystemResources => 8,
+        error.InputOutput => 1117,
+        error.NetworkNotFound => 53,
+        else => null,
+    };
+}
+
+/// Windows' text for a Win32 code or HRESULT, in the user's UI language, trimmed of " \r\n."; null when it has
+/// none (or `buf` is too small). A slice of `buf`.
+pub fn sysMessage(buf: []u8, code: u32) ?[]const u8 {
+    var wbuf: [512]u16 = undefined;
+    const n = w.FormatMessageW(w.FORMAT_MESSAGE_FROM_SYSTEM | w.FORMAT_MESSAGE_IGNORE_INSERTS, null, code, 0, &wbuf, wbuf.len, null);
+    if (n == 0 or buf.len < 3 * n) return null;
+    return std.mem.trim(u8, buf[0..std.unicode.wtf16LeToWtf8(buf, wbuf[0..n])], " \r\n.");
+}
+
+/// Words for the user: Windows' localized message for std's file errors (what .NET's ex.Message said), else the
+/// Zig error name. A slice of `buf` (1536 bytes holds any system message) or a static string.
+pub fn errorText(buf: []u8, err: anyerror) []const u8 {
+    if (errorCode(err)) |c| if (sysMessage(buf, c)) |m| return m;
+    return @errorName(err);
+}
+
+/// errorText as a "{f}" argument: `print("Could not save: {f}", .{win.errText(e)})`.
+pub fn errText(err: anyerror) ErrText {
+    return .{ .err = err };
+}
+
+pub const ErrText = struct {
+    err: anyerror,
+    pub fn format(t: ErrText, wr: *std.Io.Writer) std.Io.Writer.Error!void {
+        var buf: [1536]u8 = undefined;
+        try wr.writeAll(errorText(&buf, t.err));
+    }
+};
+
 /// Initialize COM as STA (call once on the UI thread, and on any worker thread that uses shell COM).
 pub fn comInitSta() !void {
     const hr = w.CoInitializeEx(null, @intCast(w.COINIT_APARTMENTTHREADED | w.COINIT_DISABLE_OLE1DDE));
@@ -701,6 +750,16 @@ pub fn recycle(gpa: Allocator, paths: []const []const u8) struct { hr: w.HRESULT
 }
 
 // ---------------------------------------------------------------- tests
+
+test "errorText: Windows' words for std errors, the name otherwise" {
+    var buf: [1536]u8 = undefined;
+    const t = errorText(&buf, error.AccessDenied);
+    try std.testing.expect(t.len > 0 and std.mem.find(u8, t, "AccessDenied") == null);
+    try std.testing.expect(sysMessage(&buf, 5) != null);
+    try std.testing.expectEqualStrings("NoSuchThing", errorText(&buf, error.NoSuchThing));
+    var out: [2048]u8 = undefined;
+    try std.testing.expectEqualStrings(try std.mem.print(&out, "x: {s}", .{t}), try std.mem.print(out[1024..], "x: {f}", .{errText(error.AccessDenied)}));
+}
 
 test "utf8 <-> utf16 round trip" {
     const gpa = std.testing.allocator;
