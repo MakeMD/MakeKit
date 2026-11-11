@@ -70,10 +70,19 @@ pub fn build(b: *std.Build) void {
     b.addNamedLazyPath("res", b.path("res"));
     b.installArtifact(imgui); // `zig build` = the lib
 
+    // ---- MakeUpdate.exe: the one networked helper (WinHTTP only; no imgui, no `w`). Consumers install it
+    // next to their exe: b.installArtifact(kit.artifact("MakeUpdate")) (docs/ZIG-0.17-NOTES.md K11).
+    const updater_mod = b.createModule(.{ .root_source_file = b.path("src/updater/main.zig"), .target = target, .optimize = optimize });
+    updater_mod.linkSystemLibrary("winhttp", .{});
+    const updater = b.addExecutable(.{ .name = "MakeUpdate", .root_module = updater_mod });
+    const install_updater = b.addInstallArtifact(updater, .{});
+    b.getInstallStep().dependOn(&install_updater.step); // = b.installArtifact: what kit.artifact("MakeUpdate") finds
+
     // ---- tests: kit unit tests + compiled cheat-sheet snippets
     const test_step = b.step("test", "Run unit tests and docs/notes_check.zig");
     const kit_tests = b.addTest(.{ .name = "kit-test", .root_module = kit });
     test_step.dependOn(&b.addRunArtifact(kit_tests).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .name = "updater-test", .root_module = updater_mod })).step);
     const notes_mod = b.createModule(.{
         .root_source_file = b.path("docs/notes_check.zig"),
         .target = target,
@@ -93,8 +102,10 @@ pub fn build(b: *std.Build) void {
     const demo = b.addExecutable(.{ .name = "makekit-demo", .root_module = demo_mod, .win32_manifest = b.path("res/app.manifest") });
     demo.subsystem = .windows;
     const install_demo = b.addInstallArtifact(demo, .{});
-    b.step("demo", "Build the demo exe").dependOn(&install_demo.step);
+    const demo_step = b.step("demo", "Build the demo exe (+ MakeUpdate.exe next to it)");
+    demo_step.dependOn(&install_demo.step);
+    demo_step.dependOn(&install_updater.step);
     const run_demo = b.addRunArtifact(demo);
-    run_demo.step.dependOn(&install_demo.step);
+    run_demo.step.dependOn(demo_step);
     b.step("run-demo", "Run the demo").dependOn(&run_demo.step);
 }

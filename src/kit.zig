@@ -8,6 +8,7 @@ pub const icons = @import("icons.zig"); // Carbon Mint icon set: icons.get(.dele
 pub const win = @import("win.zig");
 pub const jobs = @import("jobs.zig");
 pub const automation = @import("automation.zig");
+pub const update = @import("update.zig"); // MakeUpdate.exe client: check/install/due, Checker, banner (no network here)
 pub const i18n = @import("i18n.zig"); // languages: current()/apply(), plural(), pick(), fmt(), check(), combo()
 
 test {
@@ -18,4 +19,5 @@ test {
     _ = automation;
     _ = icons;
     _ = i18n;
+    _ = update;
 }

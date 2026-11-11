@@ -28,6 +28,11 @@ const State = struct {
     mixed: ui.Tri = .mixed,
     slider: c_int = 40,
     lang: ?kit.i18n.Lang = null, // Auto
+    // update banner: only with MAKEKIT_UPDATE_API set (tools/update-e2e.ps1's fake GitHub); the demo never asks GitHub
+    upd: kit.update.Checker = .{},
+    upd_path: []u8 = "",
+    upd_latest: [32]u8 = undefined,
+    upd_latest_len: usize = 0,
 
     fn setInfo(s: *State, comptime fmt: []const u8, args: anytype) void {
         const text: []const u8 = std.mem.print(&s.info, fmt, args) catch &s.info; // truncated
@@ -40,9 +45,15 @@ pub fn main(init: std.process.Init) !void {
     kit.i18n.apply(state.lang); // MAKEKIT_LANG > saved choice > Windows UI language > en
     const app = try App.init(init.gpa, .{ .title = "MakeKit Demo", .size = .{ 1280, 900 } });
     defer app.deinit();
+    if (init.environ_map.get("MAKEKIT_UPDATE_API") != null and !kit.update.disabled()) {
+        state.upd_path = try kit.update.updaterPath(init.gpa, init.io);
+        try state.upd.start(init.gpa, init.io, state.upd_path, "MakeMD/Demo", "1.0.0");
+    }
+    defer if (state.upd_path.len > 0) init.gpa.free(state.upd_path);
     app.run(.{ .user = &state, .frame = frame, .close_requested = closeRequested, .files_dropped = dropped });
     state.job.cancel();
     state.job.join();
+    state.upd.deinit();
 }
 
 fn closeRequested(app: *App) bool {
@@ -77,6 +88,23 @@ fn frame(app: *App) void {
     im.ImGui_SetNextWindowSize(vp.*.WorkSize, 0);
     _ = im.ImGui_Begin("MakeKit Demo##main", null, im.ImGuiWindowFlags_NoDecoration | im.ImGuiWindowFlags_NoMove | im.ImGuiWindowFlags_NoSavedSettings | im.ImGuiWindowFlags_NoBringToFrontOnFocus);
     defer im.ImGui_End();
+
+    if (s.upd.poll()) |res| {
+        if (res) |r| {
+            defer r.deinit();
+            const latest: []const u8 = std.mem.print(&s.upd_latest, "{s}", .{r.value.latest}) catch "";
+            if (r.value.newer) s.upd_latest_len = latest.len;
+            s.setInfo("update check: {s}", .{if (r.value.ok) "ok" else r.value.@"error"});
+        } else |e| s.setInfo("update check failed: {t}", .{e});
+    }
+    if (s.upd_latest_len > 0) {
+        var tb: [96]u8 = undefined;
+        const text = std.mem.print(&tb, "Version {s} is available", .{s.upd_latest[0..s.upd_latest_len]}) catch "";
+        if (kit.update.banner(.{ .text = text, .update = "Update now", .notes = "Release notes", .later = "Later" })) |a| {
+            s.setInfo("update banner: {t}", .{a});
+            s.upd_latest_len = 0; // the demo only hides it; an app would install / open the page / remember the skip
+        }
+    }
 
     // Left: widgets. Right: the theme (palette swatches + every icon at 16/24/32/48).
     im.ImGui_PushStyleColorImVec4(im.ImGuiCol_ChildBg, .{ .x = 0, .y = 0, .z = 0, .w = 0 });

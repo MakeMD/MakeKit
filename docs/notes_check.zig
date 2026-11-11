@@ -315,3 +315,61 @@ test "K10 kit.i18n: tables, plurals, {0} templates" {
     try testing.expectEqualStrings("22 файли", i18n.fmt(&nb, i18n.pick(tr().files, 22), .{22}));
     try testing.expectEqualStrings("Українська", i18n.Lang.uk.name());
 }
+
+// ---- K11. Updates (kit.update + MakeUpdate.exe)
+const Upd = struct {
+    checker: kit.update.Checker = .{},
+    updater: []const u8 = "", // kit.update.updaterPath(gpa, io), kept by the app
+    found: ?std.json.Parsed(kit.update.Result) = null, // the newer release the banner offers
+    skipped: [32]u8 = @splat(0), // "Later" = skip this version (persist it next to UpdateCheck / last check)
+};
+
+fn updateOnStartup(u: *Upd, gpa: std.mem.Allocator, io: std.Io, setting_on: bool, last_check: i64) void {
+    const now = std.Io.Timestamp.now(io, .real).toSeconds();
+    if (!setting_on or kit.update.disabled() or !kit.update.due(last_check, now)) return;
+    u.checker.start(gpa, io, u.updater, "MakeMD/MakeCleaner", "2.1.0") catch {}; // background: kit.jobs
+}
+
+fn updateFrame(a: *kit.app.App, u: *Upd, gpa: std.mem.Allocator, io: std.Io) void {
+    if (u.checker.poll()) |res| { // once, when the check is over: save last_check = now (also after errors)
+        if (res) |r| {
+            const skip = std.mem.eql(u8, r.value.latest, std.mem.sliceTo(&u.skipped, 0));
+            if (r.value.ok and r.value.newer and !skip) u.found = r else r.deinit(); // !ok = offline etc.: stay quiet
+        } else |_| {}
+    }
+    const r = u.found orelse return;
+    var buf: [128]u8 = undefined;
+    const text: []const u8 = std.mem.print(&buf, "Version {s} is available", .{r.value.latest}) catch "";
+    const action = kit.update.banner(.{ .text = text, .update = "Update now", .notes = "Release notes", .later = "Later" }) orelse return;
+    switch (action) {
+        .update => if (kit.update.isPortable(gpa, io)) {
+            _ = kit.win.shellExecute(gpa, .{ .file = r.value.page }) catch null; // portable: the page, no installer
+        } else {
+            const self = std.process.executablePathAlloc(io, gpa) catch return;
+            defer gpa.free(self);
+            kit.update.install(io, u.updater, "MakeMD/MakeCleaner", r.value.tag, self) catch return;
+            a.quit(); // MakeUpdate waits for this PID, installs silently, starts `self` again
+        },
+        .notes => _ = kit.win.shellExecute(gpa, .{ .file = r.value.page }) catch null,
+        .later => {
+            const n = @min(r.value.latest.len, u.skipped.len - 1);
+            u.skipped = @splat(0);
+            @memcpy(u.skipped[0..n], r.value.latest[0..n]);
+            r.deinit();
+            u.found = null;
+        },
+    }
+}
+
+test "K11 kit.update: due, the MakeUpdate line, versions" {
+    _ = &updateOnStartup;
+    _ = &updateFrame;
+    try testing.expect(kit.update.due(0, 1_800_000_000)); // never checked
+    try testing.expect(!kit.update.due(1_800_000_000, 1_800_000_000 + 3600)); // checked 1 h ago
+    const r = try kit.update.parseLine(testing.allocator,
+        \\{"ok":true,"newer":true,"latest":"2.1.0","tag":"v2.1.0","page":"https://github.com/MakeMD/MakeCleaner/releases/tag/v2.1.0"}
+    );
+    defer r.deinit();
+    try testing.expect(r.value.ok and r.value.newer and r.value.@"error".len == 0);
+    try testing.expectEqual(true, kit.update.isNewer("2.10.0", "2.9.1")); // numeric x.y.z, "v" prefix ok
+}

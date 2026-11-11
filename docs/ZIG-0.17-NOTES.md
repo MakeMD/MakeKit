@@ -1,7 +1,7 @@
 # Zig 0.17.1 cheat-sheet for MakeKit apps (Windows x86_64-windows-gnu)
 
-Part 1 (sections 0-19) = std library; Part 2 (K0-K10, at the end) = using MakeKit: consumer build.zig,
-COM via `w`, Dear ImGui via `im`, app/jobs/ui, GUI automation. Every ` ```zig ` block is compiled and run
+Part 1 (sections 0-19) = std library; Part 2 (K0-K11, at the end) = using MakeKit: consumer build.zig,
+COM via `w`, Dear ImGui via `im`, app/jobs/ui, GUI automation, i18n, updates. Every ` ```zig ` block is compiled and run
 by `zig build test` (Part 1 from `docs/notes_std.zig`, Part 2 from `docs/notes_check.zig`; except the
 K0 build-file fragments, verified by building a consumer). `py -3.12 tools/check-notes.py` checks the sync.
 
@@ -817,7 +817,7 @@ test "std.testing helpers" {
 
 # Part 2: MakeKit (Win32 / COM / Dear ImGui)
 
-Snippets below are copied verbatim from `docs/notes_check.zig` (`zig build test` runs them; 8 tests).
+Snippets below are copied verbatim from `docs/notes_check.zig` (`zig build test` runs them; 9 tests).
 They use `const kit = @import("kit"); const w = kit.w; const im = kit.im; const testing = std.testing;`.
 
 ## K0. Depending on the kit from an app (verified with a scratch consumer)
@@ -1396,3 +1396,128 @@ API (`src/i18n.zig`):
 - Fonts: Fira Sans subset already covers all six (Latin-1 + Ext-A/B, U+2019 apostrophe, « » „ “ ¿ ¡ œ æ ґ є і ї;
   verified with fontTools and in the demo screenshot); U+1E9E ẞ and U+202F come from the Segoe UI fallback.
   French: put U+00A0 before `? ! : ;` and inside « ».
+
+## K11. Updates (`kit.update` + `MakeUpdate.exe`)
+
+The apps never go online. The only networked binary is `MakeUpdate.exe` (src/updater/: WinHTTP over HTTPS,
+system proxy, User-Agent `MakeUpdate`, unauthenticated GitHub API, no user data; imports = WINHTTP (10
+functions), KERNEL32, ntdll; ReleaseSafe 1.0 MB, ReleaseSmall 0.5 MB). It is a kit build artifact: install it
+next to the app exe (verified with a scratch consumer; it is built with the app's target/optimize):
+
+```zig
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{ .default_target = .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu } });
+    const optimize = b.standardOptimizeOption(.{});
+    const kit = b.dependency("makekit", .{ .target = target, .optimize = optimize });
+    const exe_mod = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "kit", .module = kit.module("kit") }},
+    });
+    const exe = b.addExecutable(.{ .name = "consumer", .root_module = exe_mod });
+    b.installArtifact(exe);
+    // MakeUpdate.exe next to the app exe (zig-out/bin), built with the same target/optimize:
+    b.installArtifact(kit.artifact("MakeUpdate"));
+}
+```
+
+CLI (one JSON line on stdout; exit 0 = `"ok":true`, 1 = `{"ok":false,"error":"..."}`):
+
+- `MakeUpdate check --repo MakeMD/App --current 2.0.0 [--api-base URL]` -> `{"ok":true,"newer":true,"latest":"2.1.0",
+  "tag":"v2.1.0","notes":"<body, max 4000 B>","setup":"<url of App-Setup-2.1.0.exe>","sha256":"<hex>","page":"<html_url>"}`.
+  Reads `/repos/<repo>/releases/latest` (GitHub skips drafts and pre-releases; a draft/pre-release answer is
+  an error anyway); semver x.y.z compare (`-rc` sorts lower); `setup`/`sha256` only when newer, the hash
+  from the release asset `SHA256SUMS.txt` (sha256sum or Get-FileHash format, any case, BOM/CRLF ok).
+  Offline = `"error":"no connection (12007|12029|12002: url)"`: never alert on a background check.
+- `MakeUpdate install --repo MakeMD/App --tag v2.1.0 --wait-pid <app pid> --relaunch <app exe> [--api-base URL]`:
+  `/releases/tags/<tag>` -> downloads `App-Setup-2.1.0.exe` + `SHA256SUMS.txt` into `%TEMP%\MakeUpdate-<random>`,
+  SHA-256 mismatch = abort (nothing run), waits for the PID (60 s), moves its own running exe aside
+  (`MakeUpdate.exe.old`, MoveFileExW: Inno's /CLOSEAPPLICATIONS would otherwise try to close it; put back if
+  the setup brought no new one; the next run deletes `.old`), runs the setup `/VERYSILENT /SUPPRESSMSGBOXES
+  /NORESTART /CLOSEAPPLICATIONS` (per-user Inno: no UAC), starts `--relaunch`, removes the temp folder. On any
+  failure after the app has exited it starts the app again. `portable.dat` next to `--relaunch` = refused.
+- Hosts: every URL (setup and `SHA256SUMS.txt` in `check` and `install`, and each redirect hop) must be on
+  the API host or `github.com` / `objects.githubusercontent.com` / `release-assets.githubusercontent.com`,
+  else `"error":"refusing host <h> (<url>)"`. WinHTTP auto-redirects are off (REDIRECT_POLICY_NEVER);
+  MakeUpdate follows up to 5 hops itself (absolute or `/path` Location).
+- Log: `%LOCALAPPDATA%\MakeUpdate\update.log` (one line per step, kept under 256 KB).
+- Env: `MAKEKIT_UPDATE_API` = API base (tests; plain `http://` is accepted only with an overridden base);
+  `MAKEKIT_NO_UPDATE=1` = `kit.update` spawns nothing, and MakeUpdate itself refuses the real GitHub API.
+  Every test script / smoke / bugtest sets `MAKEKIT_NO_UPDATE=1`; `tools/update-e2e.ps1` is the only test that
+  runs MakeUpdate (against a local python http.server and a fake setup that writes a marker file).
+
+App side (no network imports; MakeCleaner's releasecheck may keep asserting that for the app exe):
+
+```zig
+const Upd = struct {
+    checker: kit.update.Checker = .{},
+    updater: []const u8 = "", // kit.update.updaterPath(gpa, io), kept by the app
+    found: ?std.json.Parsed(kit.update.Result) = null, // the newer release the banner offers
+    skipped: [32]u8 = @splat(0), // "Later" = skip this version (persist it next to UpdateCheck / last check)
+};
+
+fn updateOnStartup(u: *Upd, gpa: std.mem.Allocator, io: std.Io, setting_on: bool, last_check: i64) void {
+    const now = std.Io.Timestamp.now(io, .real).toSeconds();
+    if (!setting_on or kit.update.disabled() or !kit.update.due(last_check, now)) return;
+    u.checker.start(gpa, io, u.updater, "MakeMD/MakeCleaner", "2.1.0") catch {}; // background: kit.jobs
+}
+
+fn updateFrame(a: *kit.app.App, u: *Upd, gpa: std.mem.Allocator, io: std.Io) void {
+    if (u.checker.poll()) |res| { // once, when the check is over: save last_check = now (also after errors)
+        if (res) |r| {
+            const skip = std.mem.eql(u8, r.value.latest, std.mem.sliceTo(&u.skipped, 0));
+            if (r.value.ok and r.value.newer and !skip) u.found = r else r.deinit(); // !ok = offline etc.: stay quiet
+        } else |_| {}
+    }
+    const r = u.found orelse return;
+    var buf: [128]u8 = undefined;
+    const text: []const u8 = std.mem.print(&buf, "Version {s} is available", .{r.value.latest}) catch "";
+    const action = kit.update.banner(.{ .text = text, .update = "Update now", .notes = "Release notes", .later = "Later" }) orelse return;
+    switch (action) {
+        .update => if (kit.update.isPortable(gpa, io)) {
+            _ = kit.win.shellExecute(gpa, .{ .file = r.value.page }) catch null; // portable: the page, no installer
+        } else {
+            const self = std.process.executablePathAlloc(io, gpa) catch return;
+            defer gpa.free(self);
+            kit.update.install(io, u.updater, "MakeMD/MakeCleaner", r.value.tag, self) catch return;
+            a.quit(); // MakeUpdate waits for this PID, installs silently, starts `self` again
+        },
+        .notes => _ = kit.win.shellExecute(gpa, .{ .file = r.value.page }) catch null,
+        .later => {
+            const n = @min(r.value.latest.len, u.skipped.len - 1);
+            u.skipped = @splat(0);
+            @memcpy(u.skipped[0..n], r.value.latest[0..n]);
+            r.deinit();
+            u.found = null;
+        },
+    }
+}
+
+test "K11 kit.update: due, the MakeUpdate line, versions" {
+    _ = &updateOnStartup;
+    _ = &updateFrame;
+    try testing.expect(kit.update.due(0, 1_800_000_000)); // never checked
+    try testing.expect(!kit.update.due(1_800_000_000, 1_800_000_000 + 3600)); // checked 1 h ago
+    const r = try kit.update.parseLine(testing.allocator,
+        \\{"ok":true,"newer":true,"latest":"2.1.0","tag":"v2.1.0","page":"https://github.com/MakeMD/MakeCleaner/releases/tag/v2.1.0"}
+    );
+    defer r.deinit();
+    try testing.expect(r.value.ok and r.value.newer and r.value.@"error".len == 0);
+    try testing.expectEqual(true, kit.update.isNewer("2.10.0", "2.9.1")); // numeric x.y.z, "v" prefix ok
+}
+```
+
+API (`src/update.zig`): `due(last_check, now)` (unix s; 24 h, first run, clock moved back), `disabled()`,
+`updaterPath(gpa, io)` (`<exe dir>\MakeUpdate.exe`), `isPortable(gpa, io)` (`portable.dat` next to the exe),
+`check(gpa, io, updater, repo, current) !Parsed(Result)` (hidden, 30 s timeout; errors `Disabled`,
+`FileNotFound`, `Timeout`, `BadOutput`), `parseLine(gpa, stdout)`, `install(io, updater, repo, tag, relaunch)`
+(detached, hidden; quit the app right after), `Checker` (`start`, `poll() ?anyerror!Parsed(Result)` once,
+`running`, `deinit` before `app.deinit`), `banner(.{ .text, .update, .notes, .later }) ?BannerAction`
+(slim `accent_soft` bar, primary "Update now"; automation `<text>##updText`, `##updNow`, `##updNotes`,
+`##updLater`; texts come from the app's i18n table), `Version`/`isNewer`/`release` (pure helpers shared with
+MakeUpdate). The demo shows the banner only when `MAKEKIT_UPDATE_API` is set.
+
+Installer (Inno, per-user): ship `MakeUpdate.exe` in `{app}`; `[UninstallDelete]` `{app}\MakeUpdate.exe.old`
+and `{localappdata}\MakeUpdate`. Release assets: `<App>-Setup-X.Y.Z.exe` and `SHA256SUMS.txt` (lines
+`<sha256>  <file>`), tag `vX.Y.Z`, not a draft / pre-release.

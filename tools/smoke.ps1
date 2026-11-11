@@ -15,6 +15,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "zig build demo failed ($LASTEXITCODE)" }
 } finally { Pop-Location }
 
+$env:MAKEKIT_NO_UPDATE = '1'   # tests never check for updates: kit.update spawns nothing
 $exe = Join-Path $root 'zig-out\bin\makekit-demo.exe'
 $app = Start-AutoApp -Exe $exe
 $ok = $false
