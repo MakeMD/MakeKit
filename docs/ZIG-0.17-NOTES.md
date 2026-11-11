@@ -1153,7 +1153,12 @@ test "K5 ImGui widgets via im (headless frame)" {
   14 px: `src/c/im.h` renames `im.ImGui_Checkbox`, `CheckboxFlags*`, `RadioButton*` to `mkui_*` wrappers
   (src/te_hooks.cpp, FramePadding.y = 0) that move the box down to the line's text baseline, so it is centred
   on a frame-high line after `SameLine()`; a checkbox that STARTS such a line needs
-  `ImGui_AlignTextToFramePadding()` first (like text). The combo arrow button stays a frame-high square (ImGui).
+  `ImGui_AlignTextToFramePadding()` first (like text). Combos: the `mkte_BeginCombo` wrapper (src/te_hooks.cpp)
+  calls ImGui with `NoArrowButton` + no preview and draws the preview itself (ellipsis, clipped before a
+  22 px = font + FramePadding.x right zone) and a thin chevron (8 x 4 px, 1.5 px stroke at 96 DPI, scales with
+  the font; TextDisabled colour, Text on hover/open, points up while open) on a uniform frame; the whole frame
+  opens it. Combos that pass `NoArrowButton`, `NoPreview` or `WidthFitPreview` get ImGui's own look (frame-high
+  arrow square for `NoPreview`).
 - DPI: the kit sets `style.FontScaleDpi` + `ScaleAllSizes` on WM_DPICHANGED; app code uses logical px
   multiplied by `app.scale()` for explicit sizes.
 - `IM_ASSERT` is always on and never shows the CRT dialog: it prints the expression plus a Zig/C++

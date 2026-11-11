@@ -206,10 +206,37 @@ bool mkte_SelectableBoolPtrEx(const char* label, bool* p_selected, ImGuiSelectab
 }
 bool mkte_SelectableBoolPtr(const char* label, bool* p_selected, ImGuiSelectableFlags flags) { return mkte_SelectableBoolPtrEx(label, p_selected, flags, MkVec2{0, 0}); }
 
+// Kit look: ImGui's frame-high arrow square is replaced by a thin chevron in a narrow zone of a uniform frame
+// (ImGui draws the frame with NoArrowButton and no preview; the preview + chevron are drawn here). Callers that
+// pass NoArrowButton / NoPreview / WidthFitPreview themselves get ImGui's own combo.
+static void drawCombo(ImGuiWindow* win, const ImRect& bb, const char* preview, bool hot, bool open)
+{
+    ImGuiContext& g = *GImGui;
+    const ImGuiStyle& st = g.Style;
+    const float fs = g.FontSize;
+    const float zone = fs + st.FramePadding.x; // 22 px at 96 DPI (font 14 + padding 8)
+    ImDrawList* dl = win->DrawList;            // the combo's window, not the popup that BeginCombo may have begun
+    if (preview && *preview)
+        ImGui::RenderTextEllipsis(dl, ImVec2(bb.Min.x + st.FramePadding.x, bb.Min.y + st.FramePadding.y), ImVec2(bb.Max.x - zone, bb.Max.y), bb.Max.x - zone, preview, nullptr, nullptr);
+    // Chevron: 8 x 4 px, 1.5 px stroke at font 14; centred in the zone, points up while the popup is open.
+    const float hw = IM_ROUND(fs * (4.0f / 14.0f)), hh = IM_ROUND(fs * (2.0f / 14.0f)), th = fs * (1.5f / 14.0f);
+    const float cx = IM_TRUNC(bb.Max.x - zone * 0.5f) + 0.5f, cy = IM_TRUNC((bb.Min.y + bb.Max.y) * 0.5f) + 0.5f;
+    const float d = open ? -hh : hh;
+    const ImVec2 pts[3] = { ImVec2(cx - hw, cy - d), ImVec2(cx, cy + d), ImVec2(cx + hw, cy - d) };
+    dl->AddPolyline(pts, 3, ImGui::GetColorU32(hot ? ImGuiCol_Text : ImGuiCol_TextDisabled), th);
+}
+
 bool mkte_BeginCombo(const char* label, const char* preview_value, ImGuiComboFlags flags)
 {
-    const ImGuiID id = hooked() ? ImGui::GetID(label) : 0;
-    const bool open = ImGui::BeginCombo(label, preview_value, flags);
+    ImGuiContext& g = *GImGui;
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    const ImGuiID id = ImGui::GetID(label);
+    const bool custom = !(flags & (ImGuiComboFlags_NoArrowButton | ImGuiComboFlags_NoPreview | ImGuiComboFlags_WidthFitPreview));
+    g.ComboPreviewData.PreviewRect = ImRect(); // set by BeginCombo only when the item is submitted (not clipped)
+    const bool open = custom ? ImGui::BeginCombo(label, nullptr, flags | ImGuiComboFlags_NoArrowButton)
+                             : ImGui::BeginCombo(label, preview_value, flags);
+    const ImRect bb = g.ComboPreviewData.PreviewRect; // = the frame with NoArrowButton
+    if (custom && bb.GetWidth() > 0.0f) drawCombo(win, bb, preview_value, open || g.HoveredId == id, open);
     mkte_tag(id, label, preview_value, -1, ImGuiItemStatusFlags_Openable | (open ? ImGuiItemStatusFlags_Opened : 0), 0);
     return open;
 }

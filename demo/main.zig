@@ -299,7 +299,7 @@ fn compactRow(s: *State, sc: f32) void {
     _ = im.ImGui_InputTextWithHint("##mInput", "Input", &s.small, s.small.len, 0);
     im.ImGui_SameLine();
     im.ImGui_SetNextItemWidth(100 * sc);
-    if (im.ImGui_BeginCombo("##mCombo", "Combo", 0)) im.ImGui_EndCombo();
+    if (im.ImGui_BeginCombo("##mCombo", "Combo with a long preview", 0)) im.ImGui_EndCombo(); // ellipsis + chevron
     im.ImGui_SameLine();
     _ = im.ImGui_Checkbox("Check##mChk", &s.check2);
     im.ImGui_SameLine();
