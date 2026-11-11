@@ -228,7 +228,7 @@ test "K5 ImGui widgets via im (headless frame)" {
 fn exampleAppMain(init: std.process.Init) !void {
     const State = struct { clicks: u32 = 0 };
     var state: State = .{};
-    const app = try kit.app.App.init(init.gpa, .{ .title = "MakeCleaner", .palette = kit.app.palettes.cleaner });
+    const app = try kit.app.App.init(init.gpa, .{ .title = "MakeCleaner", .palette = kit.app.palettes.carbon });
     defer app.deinit();
     app.run(.{
         .user = &state,
@@ -240,7 +240,12 @@ fn exampleAppMain(init: std.process.Init) !void {
                 im.ImGui_SetNextWindowSize(vp.*.WorkSize, 0);
                 _ = im.ImGui_Begin("Main##main", null, im.ImGuiWindowFlags_NoDecoration | im.ImGuiWindowFlags_NoMove);
                 defer im.ImGui_End();
-                if (kit.ui.iconButton(kit.ui.icons.refresh, "Scan##scan", "Start scanning")) s.clicks += 1;
+                // kit icon (16 logical px, DPI-exact) + label; ImGui label "Scan##scan"
+                if (kit.ui.iconButton("scan", .cleaner, 16, "Scan")) s.clicks += 1;
+                im.ImGui_SetItemTooltip("Start scanning");
+                if (kit.ui.primaryButton("Clean##clean")) s.clicks += 1; // mint fill, anthracite text
+                kit.ui.icon(.warning, 24);
+                if (kit.icons.get(.drive, 16)) |tex| im.ImGui_Image(tex, .{ .x = kit.icons.pixels(16), .y = kit.icons.pixels(16) });
             }
         }.frame,
     });

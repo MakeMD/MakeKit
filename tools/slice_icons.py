@@ -35,7 +35,10 @@ SHEETS = {
         "options", "uninstall", "startup", None,
         "duplicates", "disk_analyzer", "wipe", None,
         "restore", "cookies", "schedule", None]),
+    "options": (2, 1, ["folder_add", "folder_remove"]),
 }
+# name -> (source icon, flat RGB): same shape, one colour (alpha kept)
+RECOLOR = {"danger": ("warning", (0xFF, 0x76, 0x75))}  # palette danger: error / destructive alerts
 
 
 def unmix(rgb, bg):
@@ -53,8 +56,8 @@ def background(px):
 
 
 def square(rgba):
-    a = rgba[..., 3]
-    ys, xs = np.nonzero(a > 8)
+    m = rgba[..., 3] > 8
+    ys, xs = np.nonzero(m.sum(1) >= 3)[0], np.nonzero(m.sum(0) >= 3)[0]  # >= 3: drop stray JPEG-edge pixels
     if len(xs) == 0:
         raise ValueError("empty cell")
     crop = rgba[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
@@ -71,6 +74,12 @@ def resized(img, n):
     return img.convert("RGBa").resize((n, n), Image.LANCZOS).convert("RGBA")
 
 
+def save(name, ico):
+    resized(ico, MASTER).save(os.path.join(OUT, name + ".png"))
+    for s in SIZES:
+        resized(ico, s).save(os.path.join(OUT, str(s), name + ".png"))
+
+
 def main():
     for d in [OUT] + [os.path.join(OUT, str(s)) for s in SIZES]:
         os.makedirs(d, exist_ok=True)
@@ -78,18 +87,19 @@ def main():
     for sheet, (cols, rows, names) in SHEETS.items():
         assert len(names) == cols * rows, sheet
         px = np.asarray(Image.open(os.path.join(SRC, sheet + ".jpg")).convert("RGB")).astype(float)
-        bg = background(px)
         H, W = px.shape[:2]
         for i, name in enumerate(names):
             if name is None:
                 continue
             r, c = divmod(i, cols)
             cell = px[r * H // rows:(r + 1) * H // rows, c * W // cols:(c + 1) * W // cols]
-            ico = square(unmix(cell, bg))
-            resized(ico, MASTER).save(os.path.join(OUT, name + ".png"))
-            for s in SIZES:
-                resized(ico, s).save(os.path.join(OUT, str(s), name + ".png"))
+            save(name, square(unmix(cell, background(cell))))  # per cell: a sheet's panels may differ in tone
             made.append(name)
+    for name, (src, rgb) in RECOLOR.items():
+        a = np.asarray(Image.open(os.path.join(OUT, src + ".png")).convert("RGBA")).copy()
+        a[..., :3] = rgb
+        save(name, Image.fromarray(a, "RGBA"))
+        made.append(name)
     contact(made)
     print(f"{len(made)} icons -> {OUT}")
 

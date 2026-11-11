@@ -5,6 +5,7 @@ const im = @import("im");
 const w = @import("w");
 const win = @import("win.zig");
 const automation = @import("automation.zig");
+const kit_icons = @import("icons.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -39,37 +40,23 @@ pub const Palette = struct {
 };
 
 pub const palettes = struct {
-    /// MakeCleaner (green accent, dark navigation rail).
-    pub const cleaner: Palette = .{
-        .bg = 0xF5F6F8,
-        .surface = 0xFFFFFF,
-        .line = 0xE1E5EA,
-        .text = 0x1D232B,
-        .muted = 0x6A7380,
-        .accent = 0x1A9E7A,
-        .accent_dark = 0x13826A,
-        .accent_soft = 0xE3F4EE,
-        .danger = 0xB3261E,
-        .rail = 0x1F2632,
-        .rail_text = 0xB9C2CF,
-        .rail_hover = 0x283141,
-        .rail_selected = 0x323D50,
-    };
-    /// MakePack: neutral, close to native Windows 11 light, indigo accent.
-    pub const pack: Palette = .{
-        .bg = 0xF3F3F3,
-        .surface = 0xFFFFFF,
-        .line = 0xE0E0E0,
-        .text = 0x1B1B1B,
-        .muted = 0x616161,
-        .accent = 0x4F46E5,
-        .accent_dark = 0x4338CA,
-        .accent_soft = 0xE8E7FC,
-        .danger = 0xC42B1C,
-        .rail = 0xEBEBEB,
-        .rail_text = 0x1B1B1B,
-        .rail_hover = 0xE0E0E0,
-        .rail_selected = 0xD6D6F5,
+    /// "Carbon Mint": the one dark theme of MakeCleaner and MakePack. Electric mint on anthracite.
+    /// Contrast (WCAG): text/bg 10.0, text/surface 7.9, text/accent_soft 6.3, muted/bg 5.9, muted/surface 4.7,
+    /// bg-on-accent 9.7, bg-on-accent_dark 6.7, rail_text/rail_selected 6.2 (checked by the test below).
+    pub const carbon: Palette = .{
+        .bg = 0x2D3436,
+        .surface = 0x3B4447,
+        .line = 0x4A5458,
+        .text = 0xDFE6E9,
+        .muted = 0xA8B3B7,
+        .accent = 0x00FFC2, // text ON mint = bg (anthracite), see ui.primaryButton
+        .accent_dark = 0x00D6A3,
+        .accent_soft = 0x25594F, // mint 18 % over bg: selection
+        .danger = 0xFF7675,
+        .rail = 0x23292B,
+        .rail_text = 0xC3CCD0,
+        .rail_hover = 0x2F3639,
+        .rail_selected = 0x1E4942, // mint 15 % over rail
     };
 };
 
@@ -88,7 +75,8 @@ pub fn colorU32(c: u32) u32 {
     return 0xFF000000 | ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF);
 }
 
-fn mix(a: u32, b: u32, t: f32) u32 {
+/// Blend 0xRRGGBB `a` toward `b` by `t` (0..1).
+pub fn mix(a: u32, b: u32, t: f32) u32 {
     var out: u32 = 0;
     inline for (.{ 16, 8, 0 }) |sh| {
         const ca: f32 = @floatFromInt((a >> sh) & 0xFF);
@@ -100,7 +88,7 @@ fn mix(a: u32, b: u32, t: f32) u32 {
 
 /// Writes palette colors + MakeKit sizes (unscaled, 96 DPI) into `style`.
 pub fn applyTheme(style: *im.ImGuiStyle, p: Palette) void {
-    im.ImGui_StyleColorsLight(style);
+    im.ImGui_StyleColorsDark(style); // sane defaults for anything not listed
     const c = &style.Colors;
     const C = struct {
         fn set(cs: *[im.ImGuiCol_COUNT]im.ImVec4, idx: c_int, v: im.ImVec4) void {
@@ -108,62 +96,70 @@ pub fn applyTheme(style: *im.ImGuiStyle, p: Palette) void {
         }
     };
     const s = C.set;
+    const frame = mix(p.bg, p.rail, 0.6); // inputs sit a bit deeper than the window
     s(c, im.ImGuiCol_Text, color(p.text, 1));
     s(c, im.ImGuiCol_TextDisabled, color(p.muted, 1));
     s(c, im.ImGuiCol_WindowBg, color(p.bg, 1));
     s(c, im.ImGuiCol_ChildBg, color(p.surface, 1));
-    s(c, im.ImGuiCol_PopupBg, color(p.surface, 1));
+    s(c, im.ImGuiCol_PopupBg, color(p.surface, 1)); // popups, modals, tooltips, combos
     s(c, im.ImGuiCol_Border, color(p.line, 1));
     s(c, im.ImGuiCol_BorderShadow, color(0, 0));
-    s(c, im.ImGuiCol_FrameBg, color(p.surface, 1));
-    s(c, im.ImGuiCol_FrameBgHovered, color(p.accent_soft, 1));
-    s(c, im.ImGuiCol_FrameBgActive, color(mix(p.accent_soft, p.accent, 0.15), 1));
-    s(c, im.ImGuiCol_TitleBg, color(p.bg, 1));
-    s(c, im.ImGuiCol_TitleBgActive, color(p.surface, 1));
-    s(c, im.ImGuiCol_TitleBgCollapsed, color(p.bg, 1));
-    s(c, im.ImGuiCol_MenuBarBg, color(p.surface, 1));
+    s(c, im.ImGuiCol_FrameBg, color(frame, 1));
+    s(c, im.ImGuiCol_FrameBgHovered, color(mix(frame, p.accent, 0.08), 1));
+    s(c, im.ImGuiCol_FrameBgActive, color(mix(frame, p.accent, 0.15), 1));
+    s(c, im.ImGuiCol_TitleBg, color(p.rail, 1));
+    s(c, im.ImGuiCol_TitleBgActive, color(p.rail, 1));
+    s(c, im.ImGuiCol_TitleBgCollapsed, color(p.rail, 1));
+    s(c, im.ImGuiCol_MenuBarBg, color(p.rail, 1));
     s(c, im.ImGuiCol_ScrollbarBg, color(0, 0));
-    s(c, im.ImGuiCol_ScrollbarGrab, color(mix(p.line, p.muted, 0.25), 1));
-    s(c, im.ImGuiCol_ScrollbarGrabHovered, color(mix(p.line, p.muted, 0.6), 1));
-    s(c, im.ImGuiCol_ScrollbarGrabActive, color(p.muted, 1));
-    s(c, im.ImGuiCol_CheckMark, color(p.surface, 1));
-    s(c, im.ImGuiCol_CheckboxSelectedBg, color(p.accent, 1));
+    s(c, im.ImGuiCol_ScrollbarGrab, color(mix(p.line, p.muted, 0.45), 1)); // a thumb you can see on bg and surface
+    s(c, im.ImGuiCol_ScrollbarGrabHovered, color(p.muted, 1));
+    s(c, im.ImGuiCol_ScrollbarGrabActive, color(p.text, 1));
+    s(c, im.ImGuiCol_CheckMark, color(p.accent, 1)); // mint tick on a soft box: solid mint stays for primary + focus
+    s(c, im.ImGuiCol_CheckboxSelectedBg, color(p.accent_soft, 1));
     s(c, im.ImGuiCol_SliderGrab, color(p.accent, 1));
     s(c, im.ImGuiCol_SliderGrabActive, color(p.accent_dark, 1));
-    s(c, im.ImGuiCol_Button, color(mix(p.surface, p.line, 0.6), 1));
-    s(c, im.ImGuiCol_ButtonHovered, color(p.accent_soft, 1));
-    s(c, im.ImGuiCol_ButtonActive, color(mix(p.accent_soft, p.accent, 0.25), 1));
-    s(c, im.ImGuiCol_Header, color(p.accent_soft, 1));
-    s(c, im.ImGuiCol_HeaderHovered, color(mix(p.surface, p.accent_soft, 0.6), 1));
-    s(c, im.ImGuiCol_HeaderActive, color(mix(p.accent_soft, p.accent, 0.2), 1));
+    s(c, im.ImGuiCol_Button, color(p.surface, 1));
+    s(c, im.ImGuiCol_ButtonHovered, color(mix(p.surface, p.accent, 0.10), 1));
+    s(c, im.ImGuiCol_ButtonActive, color(mix(p.surface, p.accent, 0.22), 1));
+    s(c, im.ImGuiCol_Header, color(p.accent_soft, 1)); // selected rows / tree nodes
+    s(c, im.ImGuiCol_HeaderHovered, color(mix(p.bg, p.accent, 0.10), 1));
+    s(c, im.ImGuiCol_HeaderActive, color(mix(p.bg, p.accent, 0.24), 1));
     s(c, im.ImGuiCol_Separator, color(p.line, 1));
     s(c, im.ImGuiCol_SeparatorHovered, color(p.accent, 0.7));
     s(c, im.ImGuiCol_SeparatorActive, color(p.accent, 1));
     s(c, im.ImGuiCol_ResizeGrip, color(p.line, 0.5));
     s(c, im.ImGuiCol_ResizeGripHovered, color(p.accent, 0.6));
     s(c, im.ImGuiCol_ResizeGripActive, color(p.accent, 0.9));
-    s(c, im.ImGuiCol_InputTextCursor, color(p.text, 1));
+    s(c, im.ImGuiCol_InputTextCursor, color(p.accent, 1));
     s(c, im.ImGuiCol_Tab, color(p.bg, 1));
-    s(c, im.ImGuiCol_TabHovered, color(p.accent_soft, 1));
+    s(c, im.ImGuiCol_TabHovered, color(mix(p.surface, p.accent, 0.10), 1));
     s(c, im.ImGuiCol_TabSelected, color(p.surface, 1));
     s(c, im.ImGuiCol_TabSelectedOverline, color(p.accent, 1));
     s(c, im.ImGuiCol_TabDimmed, color(p.bg, 1));
     s(c, im.ImGuiCol_TabDimmedSelected, color(p.surface, 1));
-    s(c, im.ImGuiCol_TabDimmedSelectedOverline, color(p.line, 1));
+    s(c, im.ImGuiCol_TabDimmedSelectedOverline, color(p.accent, 1)); // same active tab whether focused or not
     s(c, im.ImGuiCol_DockingPreview, color(p.accent, 0.5));
+    s(c, im.ImGuiCol_DockingEmptyBg, color(p.rail, 1));
     s(c, im.ImGuiCol_PlotLines, color(p.accent, 1));
+    s(c, im.ImGuiCol_PlotLinesHovered, color(p.accent_dark, 1));
     s(c, im.ImGuiCol_PlotHistogram, color(p.accent, 1)); // ProgressBar fill
     s(c, im.ImGuiCol_PlotHistogramHovered, color(p.accent_dark, 1));
-    s(c, im.ImGuiCol_TableHeaderBg, color(p.bg, 1));
+    s(c, im.ImGuiCol_TableHeaderBg, color(p.surface, 1));
     s(c, im.ImGuiCol_TableBorderStrong, color(p.line, 1));
-    s(c, im.ImGuiCol_TableBorderLight, color(p.line, 1));
+    s(c, im.ImGuiCol_TableBorderLight, color(mix(p.bg, p.line, 0.6), 1));
     s(c, im.ImGuiCol_TableRowBg, color(0, 0));
-    s(c, im.ImGuiCol_TableRowBgAlt, color(p.bg, 0.6));
-    s(c, im.ImGuiCol_TextLink, color(p.accent_dark, 1));
+    s(c, im.ImGuiCol_TableRowBgAlt, color(mix(p.bg, p.surface, 0.35), 1));
+    s(c, im.ImGuiCol_TextLink, color(p.accent, 1));
     s(c, im.ImGuiCol_TextSelectedBg, color(p.accent, 0.25));
+    s(c, im.ImGuiCol_TreeLines, color(p.line, 1));
     s(c, im.ImGuiCol_DragDropTarget, color(p.accent, 1));
+    s(c, im.ImGuiCol_DragDropTargetBg, color(p.accent, 0.08));
+    s(c, im.ImGuiCol_UnsavedMarker, color(p.accent, 1));
     s(c, im.ImGuiCol_NavCursor, color(p.accent, 1));
-    s(c, im.ImGuiCol_ModalWindowDimBg, color(0x000000, 0.30));
+    s(c, im.ImGuiCol_NavWindowingHighlight, color(p.accent, 0.7));
+    s(c, im.ImGuiCol_NavWindowingDimBg, color(0x000000, 0.45));
+    s(c, im.ImGuiCol_ModalWindowDimBg, color(0x000000, 0.45));
 
     style.WindowPadding = .{ .x = 12, .y = 12 };
     style.FramePadding = .{ .x = 10, .y = 6 };
@@ -176,6 +172,7 @@ pub fn applyTheme(style: *im.ImGuiStyle, p: Palette) void {
     style.PopupRounding = 4;
     style.GrabRounding = 4;
     style.TabRounding = 4;
+    style.TabBarOverlineSize = 2; // drawn with ImGuiTabBarFlags_DrawSelectedOverline (the kit tab look)
     style.ScrollbarRounding = 4;
     style.ScrollbarSize = 12;
     style.WindowBorderSize = 1;
@@ -193,7 +190,7 @@ pub const Config = struct {
     /// Initial / minimum client size in logical pixels (scaled by monitor DPI).
     size: [2]i32 = .{ 1100, 720 },
     min_size: [2]i32 = .{ 640, 420 },
-    palette: Palette = palettes.cleaner,
+    palette: Palette = palettes.carbon,
     /// Base font size in logical pixels.
     font_size: f32 = 16,
     /// Icon resource id from the app's .rc (`1 ICON "app.ico"` -> 1). null = default icon.
@@ -296,6 +293,7 @@ pub const App = struct {
     pub fn deinit(app: *App) void {
         automation.stop();
         app.ready = false;
+        kit_icons.releaseAll();
         cImGui_ImplDX11_Shutdown();
         cImGui_ImplWin32_Shutdown();
         im.ImGui_DestroyContext(null);
@@ -448,6 +446,11 @@ pub const App = struct {
         const y: c_int = if (target) |m| m.top + 16 else w.CW_USEDEFAULT;
         app.hwnd = w.CreateWindowExW(0, class_name, title.ptr, style, x, y, 800, 600, null, null, hinst, null);
         if (app.hwnd == null) return error.CreateWindowFailed;
+        // Dark native title bar; Win11 also takes the caption colour (COLORREF = 0x00BBGGRR). Older: ignored.
+        const dark: w.WINBOOL = 1;
+        _ = w.DwmSetWindowAttribute(app.hwnd, 20, &dark, @sizeOf(w.WINBOOL)); // DWMWA_USE_IMMERSIVE_DARK_MODE
+        const caption: w.DWORD = colorU32(app.cfg.palette.bg) & 0xFFFFFF;
+        _ = w.DwmSetWindowAttribute(app.hwnd, 35, &caption, @sizeOf(w.DWORD)); // DWMWA_CAPTION_COLOR
 
         // Now that the window lives on its monitor we know the DPI: size (and center) it.
         const dpi = w.GetDpiForWindow(app.hwnd);
@@ -521,6 +524,7 @@ pub const App = struct {
     /// GPU reset / driver update / RDP session switch: rebuild the device and the DX11 backend.
     fn recreateDevice(app: *App) void {
         cImGui_ImplDX11_Shutdown();
+        kit_icons.releaseAll();
         app.releaseDevice();
         app.createDevice() catch return; // ponytail: keep running blind; next Present retries nothing
         _ = cImGui_ImplDX11_Init(app.device, app.context);
@@ -535,6 +539,7 @@ pub const App = struct {
         style.* = app.base_style;
         im.ImGuiStyle_ScaleAllSizes(style, s);
         style.*.FontScaleDpi = s;
+        kit_icons.releaseAll(); // re-decoded lazily at the new pixel sizes
     }
 };
 
@@ -718,4 +723,36 @@ fn dropFiles(app: *App, hdrop: w.HDROP, f: *const fn (*App, []const []const u8, 
     var pt: w.POINT = .{ .x = 0, .y = 0 };
     _ = w.DragQueryPoint(hdrop, &pt);
     f(app, paths, .{ .x = @floatFromInt(pt.x), .y = @floatFromInt(pt.y) });
+}
+
+fn contrast(a: u32, b: u32) f32 {
+    const L = struct {
+        fn lum(c: u32) f32 {
+            var sum: f32 = 0;
+            inline for (.{ 16, 8, 0 }, .{ 0.2126, 0.7152, 0.0722 }) |sh, k| {
+                const v = @as(f32, @floatFromInt((c >> sh) & 0xFF)) / 255.0;
+                sum += k * (if (v <= 0.03928) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4));
+            }
+            return sum;
+        }
+    };
+    const la = L.lum(a);
+    const lb = L.lum(b);
+    return (@max(la, lb) + 0.05) / (@min(la, lb) + 0.05);
+}
+
+test "carbon palette: every text/background pair >= 4.5:1 (WCAG AA)" {
+    const p = palettes.carbon;
+    const alt_row = mix(p.bg, p.surface, 0.35);
+    const pairs = [_][2]u32{
+        .{ p.text, p.bg },                           .{ p.text, p.surface },                 .{ p.text, p.rail },
+        .{ p.text, p.accent_soft },                  .{ p.text, alt_row },                   .{ p.text, mix(p.bg, p.rail, 0.6) },
+        .{ p.text, mix(p.surface, p.accent, 0.22) }, .{ p.text, mix(p.bg, p.accent, 0.24) }, .{ p.muted, p.bg },
+        .{ p.muted, p.surface },                     .{ p.muted, p.rail },                   .{ p.muted, alt_row },
+        .{ p.bg, p.accent },                         .{ p.bg, p.accent_dark },               .{ p.accent, p.bg },
+        .{ p.accent, p.surface },                    .{ p.danger, p.bg },                    .{ p.rail_text, p.rail },
+        .{ p.rail_text, p.rail_hover },              .{ p.rail_text, p.rail_selected },      .{ p.accent, p.accent_soft }, // tick
+        .{ p.bg, p.danger },                         .{ p.bg, mix(p.danger, 0xFFFFFF, 0.2) }, // danger button
+    };
+    for (pairs) |pr| try std.testing.expect(contrast(pr[0], pr[1]) >= 4.5);
 }

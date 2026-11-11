@@ -21,5 +21,6 @@
 #include <tlhelp32.h>
 #include <srrestoreptapi.h>
 #include <dwmapi.h>
+#include <wincodec.h>
 #include <d3d11.h>
 #include <dxgi.h>

@@ -4,6 +4,7 @@ pub const im = @import("im"); // dear_bindings C API: ImGui_Button, ImGuiIO_AddK
 pub const w = @import("w"); // translated windows.h & co; COM: p.*.lpVtbl.*.Method.?(p, ...)
 pub const app = @import("app.zig");
 pub const ui = @import("ui.zig");
+pub const icons = @import("icons.zig"); // Carbon Mint icon set: icons.get(.delete, 24)
 pub const win = @import("win.zig");
 pub const jobs = @import("jobs.zig");
 pub const automation = @import("automation.zig");
@@ -14,4 +15,5 @@ test {
     _ = ui;
     _ = app;
     _ = automation;
+    _ = icons;
 }

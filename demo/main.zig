@@ -30,7 +30,7 @@ const State = struct {
 
 pub fn main(init: std.process.Init) !void {
     var state: State = .{ .gpa = init.gpa };
-    const app = try App.init(init.gpa, .{ .title = "MakeKit Demo", .size = .{ 980, 760 } });
+    const app = try App.init(init.gpa, .{ .title = "MakeKit Demo", .size = .{ 1280, 900 } });
     defer app.deinit();
     app.run(.{ .user = &state, .frame = frame, .close_requested = closeRequested, .files_dropped = dropped });
     state.job.cancel();
@@ -70,6 +70,78 @@ fn frame(app: *App) void {
     _ = im.ImGui_Begin("MakeKit Demo##main", null, im.ImGuiWindowFlags_NoDecoration | im.ImGuiWindowFlags_NoMove | im.ImGuiWindowFlags_NoSavedSettings | im.ImGuiWindowFlags_NoBringToFrontOnFocus);
     defer im.ImGui_End();
 
+    // Left: widgets. Right: the theme (palette swatches + every icon at 16/24/32/48).
+    im.ImGui_PushStyleColorImVec4(im.ImGuiCol_ChildBg, .{ .x = 0, .y = 0, .z = 0, .w = 0 });
+    _ = im.ImGui_BeginChild("left", .{ .x = 640 * sc, .y = 0 }, 0, 0);
+    im.ImGui_PopStyleColor();
+    widgets(app, s, sc);
+    im.ImGui_EndChild();
+    im.ImGui_SameLine();
+    _ = im.ImGui_BeginChild("theme", .{ .x = 0, .y = 0 }, im.ImGuiChildFlags_Borders, 0);
+    theme(app);
+    im.ImGui_EndChild();
+
+    // Close veto while the job runs.
+    if (s.quit_asked) {
+        s.quit_asked = false;
+        ui.openMessage("Quit?##quit");
+    }
+    if (ui.messageBoxEx("Quit?##quit", .question, "A job is still running. Quit anyway?", &.{ "Quit", "Keep running" }, .{ .width = 300 })) |r| {
+        if (r == 0) {
+            s.job.cancel();
+            app.quit();
+        }
+    }
+}
+
+fn theme(app: *App) void {
+    const p = app.cfg.palette;
+    im.ImGui_PushFontFloat(app.fonts.bold, 20);
+    im.ImGui_TextUnformatted("Carbon Mint");
+    im.ImGui_PopFont();
+    const names = std.enums.values(kit.icons.Name);
+    im.ImGui_SameLine();
+    im.ImGui_AlignTextToFramePadding();
+    var cb: [32]u8 = undefined;
+    ui.text("iconCount", std.mem.print(&cb, "{d} icons", .{names.len}) catch "", p.muted, 0); // smoke checks it
+    if (im.ImGui_BeginTable("palette", 3, 0)) {
+        inline for (@typeInfo(kit.app.Palette).@"struct".field_names) |f| {
+            _ = im.ImGui_TableNextColumn();
+            const c = @field(p, f);
+            _ = im.ImGui_ColorButtonEx("##sw" ++ f, kit.app.color(c, 1), im.ImGuiColorEditFlags_NoTooltip | im.ImGuiColorEditFlags_NoDragDrop, .{ .x = 18 * app.scale(), .y = 18 * app.scale() });
+            im.ImGui_SameLine();
+            var b: [48]u8 = undefined;
+            im.ImGui_TextUnformatted((std.mem.printSentinel(&b, f ++ " #{X:0>6}", .{c}, 0) catch unreachable).ptr);
+        }
+        im.ImGui_EndTable();
+    }
+    if (ui.primaryButton("Primary##primary")) {}
+    im.ImGui_SameLine();
+    _ = im.ImGui_Button("Secondary##secondary");
+    im.ImGui_SameLine();
+    _ = ui.dangerButtonEx("Delete##danger", .{ .x = 0, .y = 0 });
+    im.ImGui_SameLine();
+    _ = ui.iconButton("iconOnly", .settings, 16, null);
+    im.ImGui_SetItemTooltip("Icon-only button");
+    im.ImGui_SameLine();
+    _ = im.ImGui_TextLink("Text link##link");
+
+    im.ImGui_PushStyleVarImVec2(im.ImGuiStyleVar_ItemSpacing, .{ .x = 6 * app.scale(), .y = 6 * app.scale() });
+    defer im.ImGui_PopStyleVar();
+    for ([_]f32{ 16, 24, 32, 48 }) |size| {
+        var hb: [32]u8 = undefined;
+        im.ImGui_SeparatorText((std.mem.printSentinel(&hb, "Icons {d} px", .{size}, 0) catch unreachable).ptr);
+        const step = kit.icons.pixels(size) + im.ImGui_GetStyle().*.ItemSpacing.x;
+        const per_row: usize = @max(1, @as(usize, @intFromFloat(im.ImGui_GetContentRegionAvail().x / step)));
+        for (names, 0..) |n, i| {
+            if (i % per_row != 0) im.ImGui_SameLine();
+            ui.icon(n, size);
+            im.ImGui_SetItemTooltip(@tagName(n));
+        }
+    }
+}
+
+fn widgets(app: *App, s: *State, sc: f32) void {
     // Title (bold, larger) + Ukrainian + icon glyphs.
     im.ImGui_PushFontFloat(app.fonts.bold, 24);
     im.ImGui_TextUnformatted("MakeKit demo");
@@ -98,7 +170,7 @@ fn frame(app: *App) void {
     }
 
     // Plain ImGui tab bar + combo: automation sees tab labels (selected = shown tab) and the combo preview.
-    if (im.ImGui_BeginTabBar("tabs", 0)) {
+    if (im.ImGui_BeginTabBar("tabs", im.ImGuiTabBarFlags_DrawSelectedOverline)) { // the kit tab look: mint overline
         if (im.ImGui_BeginTabItem("Options##tabOptions", null, 0)) {
             _ = ui.checkbox("Verbose log##verbose", &s.verbose);
             im.ImGui_SameLine();
@@ -154,7 +226,7 @@ fn frame(app: *App) void {
         if (ui.progressStrip("job", s.job.status(&sb), s.job.done.load(.acquire), s.job.total.load(.acquire), true)) s.job.cancel();
     } else {
         if (s.job.takeFinished()) s.job_done = true;
-        if (ui.iconButton(ui.icons.refresh, "Start job##job", "Runs a 1.2 s fake job")) {
+        if (ui.iconButton("job", .refresh, 16, "Start job")) {
             s.job_done = false;
             s.job.start(s, worker) catch |e| s.setInfo("start failed: {t}", .{e});
         }
@@ -168,7 +240,7 @@ fn frame(app: *App) void {
 
     // Modal dialog.
     im.ImGui_SeparatorText("Dialogs & shell");
-    if (ui.iconButton(ui.icons.warning, "Show dialog##msg", null)) ui.openMessage("Delete files?##dlg");
+    if (ui.iconButton("msg", .warning, 16, "Show dialog")) ui.openMessage("Delete files?##dlg");
     im.ImGui_SameLine();
     if (im.ImGui_Button("Delete##pageDelete")) s.setInfo("page Delete clicked", .{}); // same text as the dialog button
     if (ui.messageBox("Delete files?##dlg", .warning, "Delete 3 selected items? Їх можна відновити з Кошика.", &.{ "Delete", "Cancel" })) |r| s.dialog_result = r;
@@ -178,7 +250,7 @@ fn frame(app: *App) void {
     }
 
     im.ImGui_SameLine();
-    if (ui.iconButton(ui.icons.open_file, "Open file...##open", "IFileOpenDialog")) {
+    if (ui.iconButton("open", .folder, 16, "Open file...")) {
         const filters = [_]kit.win.Filter{ .{ .name = "Text", .spec = "*.txt;*.md" }, .{ .name = "All files", .spec = "*.*" } };
         if (kit.win.openFiles(s.gpa, app.hwnd, true, .{ .title = "Pick files", .filters = &filters })) |res| {
             if (res) |list| {
@@ -189,7 +261,8 @@ fn frame(app: *App) void {
     }
 
     im.ImGui_SameLine();
-    if (ui.iconButton(ui.icons.delete, "Recycle temp file##recycle", "Creates a temp file and sends it to the Recycle Bin")) recycleTemp(s);
+    if (ui.iconButton("recycle", .delete, 16, "Recycle temp file")) recycleTemp(s);
+    im.ImGui_SetItemTooltip("Creates a temp file and sends it to the Recycle Bin");
 
     // Text input (fixed buffer) + echo button for automation checks.
     im.ImGui_SeparatorText("Input");
@@ -207,18 +280,6 @@ fn frame(app: *App) void {
     im.ImGui_Spacing();
     im.ImGui_TextDisabled("Drop files onto the window to see their paths.");
     if (s.info_len > 0) ui.text("info", s.info[0..s.info_len], null, im.ImGui_GetContentRegionAvail().x);
-
-    // Close veto while the job runs.
-    if (s.quit_asked) {
-        s.quit_asked = false;
-        ui.openMessage("Quit?##quit");
-    }
-    if (ui.messageBoxEx("Quit?##quit", .question, "A job is still running. Quit anyway?", &.{ "Quit", "Keep running" }, .{ .width = 300 })) |r| {
-        if (r == 0) {
-            s.job.cancel();
-            app.quit();
-        }
-    }
 }
 
 fn recycleTemp(s: *State) void {

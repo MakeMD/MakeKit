@@ -26,6 +26,7 @@ try {
     }
     function Check($cond, [string]$what) { if (-not $cond) { throw "check failed: $what" } }
     Check ((Get-AutoText $app '##dpi') -like 'DPI *') 'kit.ui.text is readable (Get-AutoText ##dpi)'
+    Check ((Get-AutoText $app '##iconCount') -eq '39 icons') 'icon grid drawn (kit.icons)'
 
     # tri-state: "All" starts mixed; unchecking a child keeps it mixed (unchecked from ImGui's view)
     Check (Wait-AutoItem $app 'All##all').mixed 'All##all is mixed'
@@ -91,7 +92,7 @@ try {
     $null = Wait-AutoLabel $app 'Job finished*' 3000
 
     $null = Invoke-AutoFrames $app 3
-    $shot = Save-AutoScreenshot $app (Join-Path $root 'zig-out\smoke.png') -Png
+    $shot = Save-AutoScreenshot $app (Join-Path $root 'zig-out\carbon-demo.png') -Png
     $sig = [System.IO.File]::ReadAllBytes($shot)[0..3]
     Check ($sig[1] -eq 0x50 -and $sig[2] -eq 0x4E -and $sig[3] -eq 0x47) 'screenshot is a PNG'
     Write-Host "screenshot: $shot"

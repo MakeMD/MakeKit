@@ -1,9 +1,10 @@
 //! Small reusable widgets: compact / tri-state checkbox, automation-readable text, modal message box,
-//! progress strip, icon buttons.
+//! progress strip, icons (kit.icons set), icon / primary buttons.
 const std = @import("std");
 const im = @import("im");
 const app = @import("app.zig");
 const automation = @import("automation.zig");
+const icons_png = @import("icons.zig");
 
 /// Segoe Fluent Icons / Segoe MDL2 Assets code points (same in both fonts).
 pub const icons = struct {
@@ -56,9 +57,21 @@ pub const Tri = enum { off, on, mixed };
 pub fn triCheckbox(label: [*:0]const u8, state: *Tri) bool {
     var b = state.* == .on;
     const mixed = state.* == .mixed;
-    if (mixed) im.ImGui_PushItemFlag(im.ImGuiItemFlags_MixedValue, true);
+    if (mixed) {
+        im.ImGui_PushItemFlag(im.ImGuiItemFlags_MixedValue, true);
+        im.ImGui_PushStyleColorImVec4(im.ImGuiCol_CheckMark, .{ .x = 0, .y = 0, .z = 0, .w = 0 }); // ImGui's square reads as a dot
+    }
     const changed = checkbox(label, &b);
-    if (mixed) im.ImGui_PopItemFlag();
+    if (mixed) {
+        im.ImGui_PopStyleColor();
+        im.ImGui_PopItemFlag();
+        // "partial" = a dash across the box (the box is a square of the item's height at its left edge)
+        const r0 = im.ImGui_GetItemRectMin();
+        const side = im.ImGui_GetItemRectMax().y - r0.y;
+        const t = @max(2, @round(side * 0.14));
+        const y = @round(r0.y + (side - t) / 2);
+        im.ImDrawList_AddRectFilled(im.ImGui_GetWindowDrawList(), .{ .x = @round(r0.x + side * 0.25), .y = y }, .{ .x = @round(r0.x + side * 0.75), .y = y + t }, im.ImGui_GetColorU32(im.ImGuiCol_CheckMark));
+    }
     if (changed) state.* = if (b) .on else .off;
     return changed;
 }
@@ -84,7 +97,17 @@ pub fn text(id: []const u8, s: []const u8, color: ?u32, wrap_w: f32) void {
 
 // ---------------------------------------------------------------- modal message box
 
-pub const MsgKind = enum { info, warning, err, question };
+/// `danger` = a destructive confirm ("Delete 3 files?"): danger icon and a danger-filled button 0.
+pub const MsgKind = enum { info, warning, err, question, danger };
+
+/// The picture of a message kind: info/question = info, warning = warning, err/danger = danger (red triangle).
+pub fn msgIcon(kind: MsgKind) icons_png.Name {
+    return switch (kind) {
+        .info, .question => .info,
+        .warning => .warning,
+        .err, .danger => .danger,
+    };
+}
 
 pub const MsgOptions = struct {
     /// Text wrap width in logical px (the box grows to fit it).
@@ -112,19 +135,7 @@ pub fn messageBoxEx(id: [*:0]const u8, kind: MsgKind, msg: []const u8, buttons: 
     if (!im.ImGui_BeginPopupModal(id, null, im.ImGuiWindowFlags_AlwaysAutoResize | im.ImGuiWindowFlags_NoSavedSettings)) return null;
     defer im.ImGui_EndPopup();
 
-    const pal = if (app.current()) |a| a.cfg.palette else app.palettes.cleaner;
-    const icon: u21, const col: u32 = switch (kind) {
-        .info => .{ icons.info, pal.accent },
-        .warning => .{ icons.warning, 0xC77700 },
-        .err => .{ icons.err, pal.danger },
-        .question => .{ icons.question, pal.accent },
-    };
-    const g = glyph(icon);
-    im.ImGui_PushFontFloat(null, im.ImGui_GetStyle().*.FontSizeBase * 1.75);
-    im.ImGui_PushStyleColorImVec4(im.ImGuiCol_Text, app.color(col, 1));
-    im.ImGui_TextUnformatted(&g);
-    im.ImGui_PopStyleColor();
-    im.ImGui_PopFont();
+    icon(msgIcon(kind), 32);
     im.ImGui_SameLineEx(0, 14 * s);
     text("msgText", msg, null, opt.width * s);
     im.ImGui_Dummy(.{ .x = 0, .y = 6 * s });
@@ -142,7 +153,9 @@ pub fn messageBoxEx(id: [*:0]const u8, kind: MsgKind, msg: []const u8, buttons: 
         if (i > 0) im.ImGui_SameLine();
         var lb: [256]u8 = undefined;
         const label = std.mem.printSentinel(&lb, "{s}##msgButton{d}", .{ std.mem.span(b), i }, 0) catch std.mem.span(b);
-        if (im.ImGui_ButtonEx(label.ptr, .{ .x = buttonWidth(b, min_w), .y = 0 })) result = i;
+        const size: im.ImVec2 = .{ .x = buttonWidth(b, min_w), .y = 0 };
+        const clicked = if (i > 0) im.ImGui_ButtonEx(label.ptr, size) else if (kind == .danger) dangerButtonEx(label.ptr, size) else primaryButtonEx(label.ptr, size);
+        if (clicked) result = i;
         if (i == 0) im.ImGui_SetItemDefaultFocus();
     }
     if (result == null and buttons.len > 0 and !im.ImGui_IsWindowAppearing()) {
@@ -186,21 +199,77 @@ pub fn progressStrip(id: []const u8, status: []const u8, done: u64, total: u64, 
     return im.ImGui_Button("Cancel##cancel");
 }
 
-// ---------------------------------------------------------------- icon buttons
+// ---------------------------------------------------------------- icons and buttons
 
-/// Button showing an icon glyph followed by `label` ("Open...##open"); a label starting with
-/// "##" gives an icon-only button. Optional tooltip on hover.
-pub fn iconButton(icon: u21, label: []const u8, tooltip: ?[*:0]const u8) bool {
+/// Icon of the kit set, `size` logical px (pixel-exact at any DPI). Missing texture = empty space.
+pub fn icon(name: icons_png.Name, size: f32) void {
+    iconTinted(name, size, 0xFFFFFF);
+}
+
+/// `icon` multiplied by `tint` (0xRRGGBB; 0xFFFFFF = as drawn). Respects BeginDisabled's alpha.
+pub fn iconTinted(name: icons_png.Name, size: f32, tint: u32) void {
+    const px = icons_png.pixels(size);
+    const pos = im.ImGui_GetCursorScreenPos();
+    im.ImGui_Dummy(.{ .x = px, .y = px });
+    drawIcon(name, size, .{ .x = pos.x, .y = pos.y }, tint);
+}
+
+fn drawIcon(name: icons_png.Name, size: f32, pos: im.ImVec2, tint: u32) void {
+    const t = icons_png.get(name, size) orelse return;
+    const px = icons_png.pixels(size);
+    const x = @round(pos.x); // whole pixels: texels map 1:1, no bilinear blur or fringes
+    const y = @round(pos.y);
+    const col = im.ImGui_GetColorU32ImU32(app.colorU32(tint)); // style alpha (disabled) applied
+    im.ImDrawList_AddImageEx(im.ImGui_GetWindowDrawList(), t, .{ .x = x, .y = y }, .{ .x = x + px, .y = y + px }, .{ .x = 0, .y = 0 }, .{ .x = 1, .y = 1 }, col);
+}
+
+/// Button with a kit icon (`size` logical px) and an optional label after it. ImGui label =
+/// "<label>##<id>" (automation sees both). Tooltip: `im.ImGui_SetItemTooltip("...")` right after.
+pub fn iconButton(id: []const u8, name: icons_png.Name, size: f32, label: ?[]const u8) bool {
     var buf: [256]u8 = undefined;
-    const g = glyph(icon);
-    const gs = std.mem.sliceTo(&g, 0);
-    const lbl = (if (label.len == 0 or std.mem.startsWith(u8, label, "##"))
-        std.mem.printSentinel(&buf, "{s}{s}", .{ gs, label }, 0)
-    else
-        std.mem.printSentinel(&buf, "{s}  {s}", .{ gs, label }, 0)) catch return false;
-    const pressed = im.ImGui_Button(lbl.ptr);
-    if (tooltip) |t| if (im.ImGui_IsItemHovered(im.ImGuiHoveredFlags_ForTooltip)) im.ImGui_SetTooltip("%s", t);
+    const lbl = std.mem.printSentinel(&buf, "{s}##{s}", .{ label orelse "", id }, 0) catch return false;
+    const style = im.ImGui_GetStyle();
+    const pad = style.*.FramePadding;
+    const px = icons_png.pixels(size);
+    const text_w = if (label) |l| im.ImGui_CalcTextSizeEx(l.ptr, l.ptr + l.len, false, -1).x + style.*.ItemInnerSpacing.x else 0;
+    const h = @max(im.ImGui_GetFrameHeight(), px + pad.y * 2);
+    const pos = im.ImGui_GetCursorScreenPos();
+    // The label is drawn by ImGui, right-aligned, so it lands just after the icon.
+    im.ImGui_PushStyleVarImVec2(im.ImGuiStyleVar_ButtonTextAlign, .{ .x = 1, .y = 0.5 });
+    const pressed = im.ImGui_ButtonEx(lbl.ptr, .{ .x = pad.x * 2 + px + text_w, .y = h });
+    im.ImGui_PopStyleVar();
+    drawIcon(name, size, .{ .x = pos.x + pad.x, .y = pos.y + (h - px) / 2 }, 0xFFFFFF);
     return pressed;
+}
+
+/// Mint-filled call-to-action button with anthracite text (palette accent / accent_dark).
+/// Inside BeginDisabled it is a plain (dimmed) button: a faded mint fill is unreadable.
+pub fn primaryButton(label: [*:0]const u8) bool {
+    return primaryButtonEx(label, .{ .x = 0, .y = 0 });
+}
+
+pub fn primaryButtonEx(label: [*:0]const u8, size: im.ImVec2) bool {
+    const p = if (app.current()) |a| a.cfg.palette else app.palettes.carbon;
+    return filledButton(label, size, p.accent, p.accent_dark);
+}
+
+/// `primaryButtonEx` in palette danger, for the confirm button of a destructive action.
+pub fn dangerButtonEx(label: [*:0]const u8, size: im.ImVec2) bool {
+    const p = if (app.current()) |a| a.cfg.palette else app.palettes.carbon;
+    return filledButton(label, size, p.danger, app.mix(p.danger, 0xFFFFFF, 0.2)); // lighter hover keeps bg text >= 4.9:1
+}
+
+fn filledButton(label: [*:0]const u8, size: im.ImVec2, fill: u32, hover: u32) bool {
+    // ponytail: "disabled" = BeginDisabled lowered style.Alpha (ImGui has no public query for the disabled stack)
+    if (im.ImGui_GetStyle().*.Alpha < 1) return im.ImGui_ButtonEx(label, size);
+    const bg = if (app.current()) |a| a.cfg.palette.bg else app.palettes.carbon.bg;
+    im.ImGui_PushStyleColorImVec4(im.ImGuiCol_Button, app.color(fill, 1));
+    im.ImGui_PushStyleColorImVec4(im.ImGuiCol_ButtonHovered, app.color(hover, 1));
+    im.ImGui_PushStyleColorImVec4(im.ImGuiCol_ButtonActive, app.color(hover, 1));
+    im.ImGui_PushStyleColorImVec4(im.ImGuiCol_Text, app.color(bg, 1));
+    im.ImGui_PushStyleColorImVec4(im.ImGuiCol_Border, app.color(fill, 1));
+    defer im.ImGui_PopStyleColorEx(5);
+    return im.ImGui_ButtonEx(label, size);
 }
 
 test "glyph encodes PUA code points" {

@@ -1039,6 +1039,9 @@ test "K4 translated Win32 constants: casts you will need" {
 - `WM_*`, `SW_*`, `FOF_*` etc. are `c_int`; switch prongs on a `UINT msg` accept them directly.
 - Pointers are C pointers (`[*c]T`, `LPCWSTR = [*c]const u16`): a `[:0]const u16` / `kit.win.L("x")`
   coerces into them. Out-params: `var p: [*c]w.IFoo = null; ...(@ptrCast(&p))`.
+- WIC (`<wincodec.h>`): the types translate, but mingw defines `CLSID_WICImagingFactory`, `IID_IWICImagingFactory`,
+  `GUID_WICPixelFormat*` in no library (link error): declare them as `w.GUID` literals (src/icons.zig).
+  `WICBitmapInterpolationModeHighQualityCubic` (= 4) is missing from mingw's enum.
 - `w` has no import lib for `SRSetRestorePointW` (srclient): types are there, load it with
   `LoadLibraryW(L("srclient.dll"))` + `GetProcAddress`. All other headers in `src/c/win.h` translated fine.
 - `w.zig` is ~9 MB; the kit build caches it, the first translation takes ~5 s.
@@ -1139,7 +1142,7 @@ test "K5 ImGui widgets via im (headless frame)" {
   TreeNode`: call the end function only when the begin returned true.
 - Fonts (kit): Segoe UI + merged Segoe Fluent Icons/MDL2 (PUA U+E700-U+F8FF) at `style.FontSizeBase` (16);
   1.92+ fonts are dynamic, so `ImGui_PushFontFloat(app.fonts.bold, 24)` gives a bold 24 px title; all of
-  Cyrillic renders without glyph ranges. Icons: `kit.ui.icons.*` / `kit.ui.glyph(cp)`.
+  Cyrillic renders without glyph ranges. Font glyphs: `kit.ui.icons.*` / `kit.ui.glyph(cp)`; pictures: `kit.icons` (K6).
 - DPI: the kit sets `style.FontScaleDpi` + `ScaleAllSizes` on WM_DPICHANGED; app code uses logical px
   multiplied by `app.scale()` for explicit sizes.
 - `IM_ASSERT` is always on and never shows the CRT dialog: it prints the expression plus a Zig/C++
@@ -1151,7 +1154,7 @@ test "K5 ImGui widgets via im (headless frame)" {
 fn exampleAppMain(init: std.process.Init) !void {
     const State = struct { clicks: u32 = 0 };
     var state: State = .{};
-    const app = try kit.app.App.init(init.gpa, .{ .title = "MakeCleaner", .palette = kit.app.palettes.cleaner });
+    const app = try kit.app.App.init(init.gpa, .{ .title = "MakeCleaner", .palette = kit.app.palettes.carbon });
     defer app.deinit();
     app.run(.{
         .user = &state,
@@ -1163,7 +1166,12 @@ fn exampleAppMain(init: std.process.Init) !void {
                 im.ImGui_SetNextWindowSize(vp.*.WorkSize, 0);
                 _ = im.ImGui_Begin("Main##main", null, im.ImGuiWindowFlags_NoDecoration | im.ImGuiWindowFlags_NoMove);
                 defer im.ImGui_End();
-                if (kit.ui.iconButton(kit.ui.icons.refresh, "Scan##scan", "Start scanning")) s.clicks += 1;
+                // kit icon (16 logical px, DPI-exact) + label; ImGui label "Scan##scan"
+                if (kit.ui.iconButton("scan", .cleaner, 16, "Scan")) s.clicks += 1;
+                im.ImGui_SetItemTooltip("Start scanning");
+                if (kit.ui.primaryButton("Clean##clean")) s.clicks += 1; // mint fill, anthracite text
+                kit.ui.icon(.warning, 24);
+                if (kit.icons.get(.drive, 16)) |tex| im.ImGui_Image(tex, .{ .x = kit.icons.pixels(16), .y = kit.icons.pixels(16) });
             }
         }.frame,
     });
@@ -1182,16 +1190,30 @@ API: `App.init(gpa, Config) !*App` (hidden window + D3D11 device, WARP fallback;
 veto, then call `app.quit()` later), `.files_dropped(app, paths, pos)` (paths valid during the call;
 the WM_DROPFILES message filter is opened for elevated runs, untested elevated). The loop sleeps in `MsgWaitForMultipleObjectsEx` when idle (0 % CPU), renders
 3 frames after any message, 10 fps for 1.5 s after input (hover delays) and 2 fps while a text field is
-active (caret). Palettes: `kit.app.palettes.cleaner` / `.pack`; `kit.app.color(0xRRGGBB, a)`,
-`colorU32(0xRRGGBB)` for ImDrawList; palette fields `rail*`/`danger` are for app-drawn chrome.
+active (caret). Palette: one dark theme, `kit.app.palettes.carbon` ("Carbon Mint": mint `accent` 0x00FFC2 on
+anthracite `bg` 0x2D3436; text ON mint = `bg`; a test keeps every text/background pair >= 4.5:1);
+`kit.app.color(0xRRGGBB, a)`, `colorU32(0xRRGGBB)` for ImDrawList; palette fields `rail*`/`danger` are for
+app-drawn chrome. The native title bar is dark (DWMWA_USE_IMMERSIVE_DARK_MODE, Win11 caption = `bg`).
 `MAKEKIT_DISPLAY=\\.\DISPLAY1` centers the window on that monitor and shows it without activation.
 
 Widgets (`kit.ui`): `checkbox(label, *bool)` (compact box), `triCheckbox(label, *Tri)` (`.off/.on/.mixed`,
 same box), `text(id, text, ?0xRRGGBB, wrap_w)` (TextUnformatted that automation can read: item
 `<text>##<id>`, value = text; `wrap_w` 0 = no wrap), `openMessage(id)` + `messageBox(id, kind, text,
 buttons) ?usize` / `messageBoxEx(..., .{ .width = 480 })` (Enter = 0, Esc = last; items `<text>##msgText`,
-`<button>##msgButton<i>`), `progressStrip(id, status, done, total, can_cancel) bool` (items `##status`,
-`##percent`, `Cancel##cancel`; `total == 0` = indeterminate), `iconButton(icon, label, tooltip) bool`.
+`<button>##msgButton<i>`; no close X on purpose: Esc = last button; kinds `.info/.question/.warning/.err/.danger`, picture
+`msgIcon(kind)` (err/danger = the red `.danger` triangle), button 0 = primary, for `.danger` (destructive confirm) a
+danger-filled button), `progressStrip(id, status, done, total,
+can_cancel) bool` (items `##status`, `##percent`, `Cancel##cancel`; `total == 0` = indeterminate),
+`iconButton(id, name, size, ?label) bool` (ImGui label `<label>##<id>`; tooltip: `ImGui_SetItemTooltip` after),
+`icon(name, size)`, `iconTinted(name, size, 0xRRGGBB)`, `primaryButton(label)` / `primaryButtonEx(label, size)`,
+`dangerButtonEx(label, size)` (both fall back to a plain dimmed button inside `BeginDisabled`). Checkboxes: soft
+`accent_soft` box with a mint tick; `triCheckbox` .mixed draws a mint dash. Tab bars: pass `ImGuiTabBarFlags_DrawSelectedOverline` (theme: 2 px mint
+overline on the active tab, focused or not).
+Icons (`kit.icons`): `Name` = enum of the 39 icons (`.delete`, `.@"test"`, `.disk_analyzer` ...),
+`get(name, logical_px) ?im.ImTextureRef` (WIC decode of the embedded 128 px master, HighQualityCubic to
+logical px x DPI, straight-alpha BGRA texture, cached per (name, px); `<exe dir>\icons\<name>.png` wins),
+`pixels(logical_px) f32` (the texture side: draw it at that size on whole pixels), `embedded_bytes`
+(~610 KB in every exe that references `kit.icons`). The cache is dropped on DPI change / device reset / deinit.
 Win32 helpers (`kit.win`): `toW/fromW/fromWZ/L`, `check`, `comInitSta`, `release`, `Lock`, `getEnv`,
 `expandEnv`, `knownFolder`, registry (`openKey/createKey/deleteKeyTree`, `Key.read*/write*/deleteValue/
 hasValue/deleteSubTree(leaf)/subkeys/values`, `.view = .wow64_64/.wow64_32`; paths and value names of

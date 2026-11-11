@@ -58,7 +58,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/kit.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{ .{ .name = "im", .module = im_t.mod }, .{ .name = "w", .module = w_t.mod } },
+        .imports = &.{
+            .{ .name = "im", .module = im_t.mod },
+            .{ .name = "w", .module = w_t.mod },
+            // icon masters live in icons/, outside src/: @embedFile must stay inside its module
+            .{ .name = "kit_icons", .module = b.createModule(.{ .root_source_file = b.path("icons/embed.zig") }) },
+        },
     });
     b.addNamedLazyPath("manifest", b.path("res/app.manifest"));
     b.addNamedLazyPath("res", b.path("res"));
