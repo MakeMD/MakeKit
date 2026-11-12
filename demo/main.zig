@@ -166,7 +166,7 @@ fn theme(app: *App) void {
     im.ImGui_SeparatorText("Languages");
     const s = app.userData(State);
     im.ImGui_SetNextItemWidth(180 * app.scale());
-    _ = kit.i18n.combo("Language##lang", "Auto (system)", &s.lang);
+    _ = kit.i18n.combo("Language##lang", "Auto", &s.lang);
     im.ImGui_SameLine();
     im.ImGui_AlignTextToFramePadding();
     const l = kit.i18n.current();

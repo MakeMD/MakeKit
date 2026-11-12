@@ -206,7 +206,7 @@ test "job runs, reports progress, cancels" {
     while (!job.takeFinished()) std.atomic.spinLoopHint();
     try std.testing.expect(!job.takeFinished()); // only once per run
     try std.testing.expectEqual(@as(f32, 1.0), job.progress());
-    var buf: [64]u8 = undefined;
+    var buf: [512]u8 = undefined;
     try std.testing.expectEqualStrings("item 10", job.status(&buf));
     try std.testing.expect(job.errorText(&buf) == null);
 
@@ -217,6 +217,7 @@ test "job runs, reports progress, cancels" {
 
     try job.start(null, Worker.boom);
     job.join();
-    try std.testing.expectEqualStrings("DiskFull", job.errorText(&buf).?);
+    var gen: [1536]u8 = undefined;
+    try std.testing.expectEqualStrings(win.sysMessage(&gen, 1359).?, job.errorText(&buf).?); // Windows' words, not "DiskFull"
     try std.testing.expectEqual(error.DiskFull, job.err.?);
 }

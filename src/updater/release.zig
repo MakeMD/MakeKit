@@ -125,7 +125,7 @@ pub fn safeSegment(s: []const u8) bool {
 }
 
 /// One stdout line of `MakeUpdate check` (and of a failed `install`). Every field has a default, so the
-/// failure line `{"ok":false,"error":"..."}` parses into the same struct.
+/// failure line `{"ok":false,"reason":"..","error":"..","detail":".."}` parses into the same struct.
 pub const CheckResult = struct {
     ok: bool = false,
     newer: bool = false,
@@ -141,7 +141,13 @@ pub const CheckResult = struct {
     sha256: []const u8 = "",
     /// Release page (html_url): portable copies open this instead of installing.
     page: []const u8 = "",
+    /// Failure, in plain English ("No internet connection."). A translated app shows its own text for `reason`.
     @"error": []const u8 = "",
+    /// Failure kind: "offline", "failed" (server or release problem), "disk", "damaged" (download does not match
+    /// its checksum), "app_running", "install_failed", "portable", "disabled". Unknown values: treat as "failed".
+    reason: []const u8 = "",
+    /// The technical cause, for a log file only.
+    detail: []const u8 = "",
 };
 
 /// `s` cut to at most `max` bytes without splitting a UTF-8 sequence.
@@ -223,10 +229,11 @@ test "CheckResult: success and failure lines, repo/tag validation, UTF-8 cut" {
     defer ok.deinit();
     try testing.expect(ok.value.ok and ok.value.newer and ok.value.@"error".len == 0);
     try testing.expectEqualStrings("v2.1.0", ok.value.tag);
-    const bad = try std.json.parseFromSlice(CheckResult, testing.allocator, "{\"ok\":false,\"error\":\"no connection (12007)\"}", .{});
+    const bad = try std.json.parseFromSlice(CheckResult, testing.allocator, "{\"ok\":false,\"reason\":\"offline\",\"error\":\"No internet connection.\",\"detail\":\"no connection (12007)\"}", .{});
     defer bad.deinit();
     try testing.expect(!bad.value.ok and !bad.value.newer);
-    try testing.expectEqualStrings("no connection (12007)", bad.value.@"error");
+    try testing.expectEqualStrings("offline", bad.value.reason);
+    try testing.expectEqualStrings("No internet connection.", bad.value.@"error");
 
     try testing.expect(validRepo("MakeMD/MakeCleaner") and validRepo("a-b/c.d_e"));
     for ([_][]const u8{ "MakeMD", "/x", "x/", "a/b/c", "a/..", "a/b?x=1", "a/b c", "a/%2e" }) |r| try testing.expect(!validRepo(r));

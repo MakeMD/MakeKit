@@ -274,7 +274,7 @@ fn badForms(b: Forms, v: Forms, lang: Lang) bool {
 
 // ---- language picker
 
-/// Combo "Auto (system)" + the six languages in their own names. `pref` null = Auto. On a change it
+/// Combo "Auto" + the six languages in their own names. `pref` null = Auto. On a change it
 /// updates `pref`, calls `apply` (takes effect next frame) and returns true: persist `pref` then.
 /// Automation: items `<name>##lang_<code>` and `<auto_label>##lang_auto`.
 pub fn combo(label: [*:0]const u8, auto_label: []const u8, pref: *?Lang) bool {

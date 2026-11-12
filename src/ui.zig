@@ -5,6 +5,7 @@ const im = @import("im");
 const app = @import("app.zig");
 const automation = @import("automation.zig");
 const icons_png = @import("icons.zig");
+const i18n = @import("i18n.zig");
 
 /// Segoe Fluent Icons / Segoe MDL2 Assets code points (same in both fonts).
 pub const icons = struct {
@@ -202,22 +203,35 @@ fn buttonWidth(label: [*:0]const u8, min_w: f32) f32 {
 
 // ---------------------------------------------------------------- progress strip
 
+/// The words of `progressStrip`; a translated app passes its own to `progressStripEx`.
+pub const ProgressLabels = struct {
+    cancel: []const u8 = "Cancel",
+    /// {0} = percent, {1} = done, {2} = total.
+    count: []const u8 = "{0}% ({1} of {2})",
+};
+
 /// Status line, then [bar] "NN% (x of y)" [Cancel]. `total == 0` draws an indeterminate bar
 /// (call `app.animate(true)` while it is shown). Returns true when Cancel was clicked.
-/// Automation: `<status>##status`, `<NN% (x of y)>##percent`, `Cancel##cancel` (ImGui ids scoped by `id`).
+/// Automation: `<status>##status`, `<NN% (x of y)>##percent`, `<cancel>##cancel` (ImGui ids scoped by `id`).
 pub fn progressStrip(id: []const u8, status: []const u8, done: u64, total: u64, can_cancel: bool) bool {
+    return progressStripEx(id, status, done, total, can_cancel, .{});
+}
+
+pub fn progressStripEx(id: []const u8, status: []const u8, done: u64, total: u64, can_cancel: bool, l: ProgressLabels) bool {
     im.ImGui_PushIDStr(id.ptr, id.ptr + id.len);
     defer im.ImGui_PopID();
     var buf: [128]u8 = undefined;
     text("status", status, null, 0);
     const pct: u64 = if (total == 0) 0 else @min(100, done * 100 / total);
-    const label = (if (total == 0)
-        std.mem.print(&buf, "{d}", .{done})
+    const label: []const u8 = if (total == 0)
+        std.mem.print(&buf, "{d}", .{done}) catch return false
     else
-        std.mem.print(&buf, "{d}% ({d} of {d})", .{ pct, done, total })) catch return false;
+        i18n.fmt(&buf, l.count, .{ pct, done, total });
+    var cb: [128]u8 = undefined;
+    const cancel = std.mem.printSentinel(&cb, "{s}##cancel", .{l.cancel}, 0) catch "Cancel##cancel";
     const style = im.ImGui_GetStyle();
     const label_w = im.ImGui_CalcTextSizeEx(label.ptr, label.ptr + label.len, false, -1).x;
-    const cancel_w = if (can_cancel) im.ImGui_CalcTextSize("Cancel").x + style.*.FramePadding.x * 2 + style.*.ItemSpacing.x else 0;
+    const cancel_w = if (can_cancel) im.ImGui_CalcTextSizeEx(cancel.ptr, null, true, -1).x + style.*.FramePadding.x * 2 + style.*.ItemSpacing.x else 0;
     const bar_w = @max(40, im.ImGui_GetContentRegionAvail().x - label_w - style.*.ItemSpacing.x - cancel_w);
     const frac: f32 = if (total == 0) @floatCast(-im.ImGui_GetTime()) else @as(f32, @floatFromInt(done)) / @as(f32, @floatFromInt(total));
     im.ImGui_ProgressBar(frac, .{ .x = bar_w, .y = 0 }, "");
@@ -226,7 +240,7 @@ pub fn progressStrip(id: []const u8, status: []const u8, done: u64, total: u64, 
     text("percent", label, null, 0);
     if (!can_cancel) return false;
     im.ImGui_SameLine();
-    return im.ImGui_Button("Cancel##cancel");
+    return im.ImGui_Button(cancel.ptr);
 }
 
 // ---------------------------------------------------------------- icons and buttons

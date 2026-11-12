@@ -15,7 +15,8 @@ const icons = @import("icons.zig");
 pub const release = @import("updater/release.zig");
 
 pub const Version = release.Version;
-/// The line `MakeUpdate check` prints (`ok`, `newer`, `latest`, `tag`, `notes`, `setup`, `sha256`, `page`, `error`).
+/// The line `MakeUpdate check` prints (`ok`, `newer`, `latest`, `tag`, `notes`, `setup`, `sha256`, `page`, and on
+/// failure `error` (plain English), `reason` (map it to the app's own translated text) and `detail` (log only)).
 pub const Result = release.CheckResult;
 pub const isNewer = release.isNewer;
 
@@ -51,7 +52,7 @@ pub fn isPortable(gpa: std.mem.Allocator, io: std.Io) bool {
 }
 
 /// Runs `MakeUpdate.exe check` hidden and parses its line (30 s timeout; caller deinit()s). A network or
-/// GitHub problem is a value: `.ok = false` + `.error` (offline is normal: don't alert on a background check).
+/// GitHub problem is a value: `.ok = false` + `.reason` / `.error` (offline is normal: don't alert on a background check).
 /// Zig errors: Disabled (MAKEKIT_NO_UPDATE=1), FileNotFound (no helper), Timeout, BadOutput.
 pub fn check(gpa: std.mem.Allocator, io: std.Io, updater: []const u8, repo: []const u8, current: []const u8) !std.json.Parsed(Result) {
     if (disabled()) return error.Disabled;
@@ -208,9 +209,9 @@ test "parseLine: MakeUpdate output lines" {
     defer ok.deinit();
     try testing.expect(ok.value.ok and ok.value.newer);
     try testing.expectEqualStrings("v2.1.0", ok.value.tag);
-    const off = try parseLine(testing.allocator, "{\"ok\":false,\"error\":\"no connection (12007: https://api.github.com/x)\"}");
+    const off = try parseLine(testing.allocator, "{\"ok\":false,\"reason\":\"offline\",\"error\":\"No internet connection.\",\"detail\":\"no connection (12007: https://api.github.com/x)\"}");
     defer off.deinit();
-    try testing.expect(!off.value.ok);
+    try testing.expect(!off.value.ok and std.mem.eql(u8, off.value.reason, "offline"));
     try testing.expectError(error.BadOutput, parseLine(testing.allocator, ""));
     try testing.expectError(error.BadOutput, parseLine(testing.allocator, "panic: oops\n"));
 }

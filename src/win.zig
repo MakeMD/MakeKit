@@ -57,6 +57,17 @@ pub fn errorCode(err: anyerror) ?u32 {
         error.OutOfMemory, error.SystemResources => 8,
         error.InputOutput => 1117,
         error.NetworkNotFound => 53,
+        error.FileTooBig => 223,
+        error.SharingViolation => 32,
+        error.ReadOnlyFileSystem => 19,
+        error.NoDevice => 21,
+        error.DeviceBusy => 170,
+        error.Timeout, error.ConnectionTimedOut => 1460,
+        error.ConnectionRefused => 1225,
+        error.NetworkUnreachable => 1231,
+        error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => 4,
+        error.InvalidUtf8, error.InvalidWtf8 => 123,
+        error.Canceled => 1223,
         else => null,
     };
 }
@@ -70,11 +81,12 @@ pub fn sysMessage(buf: []u8, code: u32) ?[]const u8 {
     return std.mem.trim(u8, buf[0..std.unicode.wtf16LeToWtf8(buf, wbuf[0..n])], " \r\n.");
 }
 
-/// Words for the user: Windows' localized message for std's file errors (what .NET's ex.Message said), else the
-/// Zig error name. A slice of `buf` (1536 bytes holds any system message) or a static string.
+/// Words for the user: Windows' localized message for std's file errors (what .NET's ex.Message said), else
+/// Windows' "An internal error occurred" (never the Zig name: log @errorName yourself). A slice of `buf`
+/// (1536 bytes holds any system message) or a static string.
 pub fn errorText(buf: []u8, err: anyerror) []const u8 {
     if (errorCode(err)) |c| if (sysMessage(buf, c)) |m| return m;
-    return @errorName(err);
+    return sysMessage(buf, 1359) orelse "An internal error occurred"; // ERROR_INTERNAL_ERROR
 }
 
 /// errorText as a "{f}" argument: `print("Could not save: {f}", .{win.errText(e)})`.
@@ -751,12 +763,14 @@ pub fn recycle(gpa: Allocator, paths: []const []const u8) struct { hr: w.HRESULT
 
 // ---------------------------------------------------------------- tests
 
-test "errorText: Windows' words for std errors, the name otherwise" {
+test "errorText: Windows' words for std errors, a generic message otherwise" {
     var buf: [1536]u8 = undefined;
     const t = errorText(&buf, error.AccessDenied);
     try std.testing.expect(t.len > 0 and std.mem.find(u8, t, "AccessDenied") == null);
     try std.testing.expect(sysMessage(&buf, 5) != null);
-    try std.testing.expectEqualStrings("NoSuchThing", errorText(&buf, error.NoSuchThing));
+    var gen: [1536]u8 = undefined;
+    var other: [1536]u8 = undefined;
+    try std.testing.expectEqualStrings(sysMessage(&gen, 1359).?, errorText(&other, error.NoSuchThing));
     var out: [2048]u8 = undefined;
     try std.testing.expectEqualStrings(try std.mem.print(&out, "x: {s}", .{t}), try std.mem.print(out[1024..], "x: {f}", .{errText(error.AccessDenied)}));
 }

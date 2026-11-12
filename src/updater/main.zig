@@ -6,7 +6,10 @@
 //!   MakeUpdate install --repo MakeMD/App --tag v2.1.0 --wait-pid PID --relaunch "C:\..\App.exe" [--api-base URL]
 //!     downloads <App>-Setup-2.1.0.exe + SHA256SUMS.txt to %TEMP%\MakeUpdate-<random>, checks the SHA-256, waits
 //!     for PID (60 s), runs the setup /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS, relaunches the app.
-//!   Any failure -> {"ok":false,"error":"..."} and exit code 1. Log: %LOCALAPPDATA%\MakeUpdate\update.log.
+//!   Any failure -> {"ok":false,"reason":"offline","error":"No internet connection.","detail":"..."} and exit
+//!   code 1: `error` is a plain sentence an app may show, `reason` is one of Reason's names (apps show their
+//!   own translated text for it), `detail` is the technical cause (for logs, never for the user).
+//!   Log: %LOCALAPPDATA%\MakeUpdate\update.log.
 //!
 //! Env: MAKEKIT_UPDATE_API = API base for tests (like --api-base; http:// is allowed only with an override);
 //! MAKEKIT_NO_UPDATE=1 refuses the real GitHub API (tests that forget the override never go online).
@@ -25,16 +28,17 @@ pub fn main(init: std.process.Init) u8 {
     const args = init.minimal.args.toSlice(arena) catch return 1;
     ctx.sweep();
     const cmd = if (args.len > 1) args[1] else "";
+    ctx.installing = std.mem.eql(u8, cmd, "install");
     const result = if (std.mem.eql(u8, cmd, "check"))
         ctx.check(args[2..])
     else if (std.mem.eql(u8, cmd, "install"))
         ctx.install(args[2..])
     else
-        ctx.fail("usage: MakeUpdate check|install --repo Owner/Name ... (see src/updater/main.zig)", .{});
+        ctx.fail(.failed, "usage: MakeUpdate check|install --repo Owner/Name ... (see src/updater/main.zig)", .{});
     result catch |err| {
-        const msg = if (ctx.msg.len > 0) ctx.msg else @errorName(err);
-        ctx.log("error: {s}", .{msg});
-        ctx.emit(.{ .ok = false, .@"error" = msg });
+        const detail = if (ctx.msg.len > 0) ctx.msg else @errorName(err);
+        ctx.log("error: {s}", .{detail});
+        ctx.emit(.{ .ok = false, .reason = @tagName(ctx.reason), .@"error" = ctx.reason.text(ctx.installing), .detail = detail });
         ctx.flushLog();
         return 1;
     };
@@ -42,19 +46,47 @@ pub fn main(init: std.process.Init) u8 {
     return 0;
 }
 
+/// Why a run failed, as the user should hear it. The names are part of the output (`reason`).
+const Reason = enum {
+    failed,
+    offline,
+    disk,
+    damaged,
+    app_running,
+    install_failed,
+    portable,
+    disabled,
+
+    fn text(r: Reason, installing: bool) []const u8 {
+        return switch (r) {
+            .failed => if (installing) "Could not download the update. Try again later." else "Could not check for updates. Try again later.",
+            .offline => "No internet connection.",
+            .disk => "Could not save the update. Check that the disk has free space.",
+            .damaged => "The downloaded file is damaged. The update was cancelled.",
+            .app_running => "The app did not close, so the update was not installed. Try again.",
+            .install_failed => "Could not install the update. Try again later.",
+            .portable => "The portable version does not update itself. Download the new version from the website.",
+            .disabled => "Updates are turned off.",
+        };
+    }
+};
+
 const Ctx = struct {
     io: Io,
     arena: std.mem.Allocator,
     env: *const std.process.Environ.Map,
     msg: []const u8 = "",
+    reason: Reason = .failed,
+    installing: bool = false,
     log_buf: std.ArrayList(u8) = .empty,
     session: ?*anyopaque = null,
     allow_http: bool = false,
     /// Host of the API base: the only host besides rel.download_hosts that fetch() talks to.
     api_host: []const u8 = "",
 
-    /// Records the error text for the JSON line and returns error.Failed.
-    fn fail(c: *Ctx, comptime fmt: []const u8, args: anytype) error{Failed} {
+    /// Records the reason and the technical detail for the JSON line and returns error.Failed.
+    fn fail(c: *Ctx, reason: Reason, comptime fmt: []const u8, args: anytype) error{Failed} {
+        c.reason = reason;
         c.msg = c.arena.print(fmt, args) catch "out of memory";
         return error.Failed;
     }
@@ -103,7 +135,7 @@ const Ctx = struct {
     }
 
     fn need(c: *Ctx, args: []const []const u8, name: []const u8) ![]const u8 {
-        return opt(args, name) orelse c.fail("missing {s}", .{name});
+        return opt(args, name) orelse c.fail(.failed, "missing {s}", .{name});
     }
 
     /// API base: --api-base > MAKEKIT_UPDATE_API > https://api.github.com. Opens the WinHTTP session.
@@ -112,15 +144,15 @@ const Ctx = struct {
         const api = std.mem.trimEnd(u8, raw, "/");
         c.allow_http = !std.mem.eql(u8, api, default_api);
         const off = c.env.get("MAKEKIT_NO_UPDATE") orelse "";
-        if (!c.allow_http and std.mem.eql(u8, off, "1")) return c.fail("updates are disabled (MAKEKIT_NO_UPDATE=1)", .{});
+        if (!c.allow_http and std.mem.eql(u8, off, "1")) return c.fail(.disabled, "updates are disabled (MAKEKIT_NO_UPDATE=1)", .{});
         c.api_host = (try c.crack(api)).host;
         c.session = WinHttpOpen(L("MakeUpdate"), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, null, null, 0) orelse
-            return c.fail("WinHttpOpen failed ({d})", .{GetLastError()});
+            return c.fail(.failed, "WinHttpOpen failed ({d})", .{GetLastError()});
         _ = WinHttpSetTimeouts(c.session, 15_000, 15_000, 30_000, 60_000);
         // fetch() follows redirects itself, so every hop passes the host allow-list.
         var never: u32 = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
         if (!WinHttpSetOption(c.session, WINHTTP_OPTION_REDIRECT_POLICY, &never, @sizeOf(u32)).toBool())
-            return c.fail("WinHttpSetOption failed ({d})", .{GetLastError()});
+            return c.fail(.failed, "WinHttpSetOption failed ({d})", .{GetLastError()});
         return api;
     }
 
@@ -129,7 +161,7 @@ const Ctx = struct {
     /// crack() + the host allow-list (rel.hostAllowed).
     fn allowed(c: *Ctx, url: []const u8) !Parts {
         const u = try c.crack(url);
-        if (!rel.hostAllowed(u.host, c.api_host)) return c.fail("refusing host {s} ({s})", .{ u.host, url });
+        if (!rel.hostAllowed(u.host, c.api_host)) return c.fail(.failed, "refusing host {s} ({s})", .{ u.host, url });
         return u;
     }
 
@@ -137,13 +169,13 @@ const Ctx = struct {
     fn crack(c: *Ctx, url: []const u8) !Parts {
         const wurl = try std.unicode.utf8ToUtf16LeAllocZ(c.arena, url);
         var uc: UrlComponents = .{};
-        if (!WinHttpCrackUrl(wurl.ptr, @intCast(wurl.len), 0, &uc).toBool()) return c.fail("bad URL {s}", .{url});
+        if (!WinHttpCrackUrl(wurl.ptr, @intCast(wurl.len), 0, &uc).toBool()) return c.fail(.failed, "bad URL {s}", .{url});
         const https = uc.nScheme == INTERNET_SCHEME_HTTPS;
-        if (!https and !(c.allow_http and uc.nScheme == INTERNET_SCHEME_HTTP)) return c.fail("refusing non-https URL {s}", .{url});
+        if (!https and !(c.allow_http and uc.nScheme == INTERNET_SCHEME_HTTP)) return c.fail(.failed, "refusing non-https URL {s}", .{url});
         const whost = try c.arena.dupeSentinel(u16, uc.lpszHostName.?[0..uc.dwHostNameLength], 0);
         return .{
             .https = https,
-            .host = std.unicode.utf16LeToUtf8Alloc(c.arena, whost) catch return c.fail("bad host in {s}", .{url}),
+            .host = std.unicode.utf16LeToUtf8Alloc(c.arena, whost) catch return c.fail(.failed, "bad host in {s}", .{url}),
             .whost = whost,
             .port = uc.nPort,
             .wpath = if (uc.lpszUrlPath) |p| try c.arena.dupeSentinel(u16, p[0 .. uc.dwUrlPathLength + uc.dwExtraInfoLength], 0) else L("/"),
@@ -154,14 +186,14 @@ const Ctx = struct {
         const url = try c.arena.print("{s}/repos/{s}/releases/{s}", .{ api, repo, what });
         var aw: Io.Writer.Allocating = .init(c.arena);
         try c.fetch(url, true, &aw.writer, 4 << 20, null);
-        return rel.parseRelease(c.arena, aw.written()) catch c.fail("bad release JSON from {s}", .{url});
+        return rel.parseRelease(c.arena, aw.written()) catch c.fail(.failed, "bad release JSON from {s}", .{url});
     }
 
     fn sums(c: *Ctx, r: rel.Release, name: []const u8) ![64]u8 {
-        const a = r.asset("SHA256SUMS.txt") orelse return c.fail("release {s} has no SHA256SUMS.txt", .{r.tag_name});
+        const a = r.asset("SHA256SUMS.txt") orelse return c.fail(.failed, "release {s} has no SHA256SUMS.txt", .{r.tag_name});
         var aw: Io.Writer.Allocating = .init(c.arena);
         try c.fetch(a.browser_download_url, false, &aw.writer, 1 << 20, null);
-        return rel.sumFor(aw.written(), name) orelse c.fail("SHA256SUMS.txt has no line for {s}", .{name});
+        return rel.sumFor(aw.written(), name) orelse c.fail(.failed, "SHA256SUMS.txt has no line for {s}", .{name});
     }
 
     // ------------------------------------------------------------ check
@@ -169,23 +201,23 @@ const Ctx = struct {
     fn check(c: *Ctx, args: []const []const u8) !void {
         const repo = try c.need(args, "--repo");
         const current = try c.need(args, "--current");
-        if (!rel.validRepo(repo)) return c.fail("bad --repo {s}", .{repo});
-        const cur = rel.Version.parse(current) orelse return c.fail("bad --current {s}", .{current});
+        if (!rel.validRepo(repo)) return c.fail(.failed, "bad --repo {s}", .{repo});
+        const cur = rel.Version.parse(current) orelse return c.fail(.failed, "bad --current {s}", .{current});
         const api = try c.begin(args);
         const r = try c.release(api, repo, "latest");
-        if (r.draft or r.prerelease) return c.fail("latest release {s} is a draft/pre-release", .{r.tag_name});
+        if (r.draft or r.prerelease) return c.fail(.failed, "latest release {s} is a draft/pre-release", .{r.tag_name});
         // the tag becomes a file name (setupName) and `install --tag`: no path characters
-        if (!rel.safeSegment(r.tag_name)) return c.fail("bad tag_name in the release JSON", .{});
+        if (!rel.safeSegment(r.tag_name)) return c.fail(.failed, "bad tag_name in the release JSON", .{});
         if (r.html_url.len > 0) _ = try c.allowed(r.html_url); // the app opens `page` in the browser
         const latest = rel.tagVersion(r.tag_name);
-        const lv = rel.Version.parse(latest) orelse return c.fail("latest tag {s} is not x.y.z", .{r.tag_name});
+        const lv = rel.Version.parse(latest) orelse return c.fail(.failed, "latest tag {s} is not x.y.z", .{r.tag_name});
         const newer = lv.order(cur) == .gt;
         var setup: []const u8 = "";
         var hex: [64]u8 = @splat('0');
         if (newer) {
             var nb: [256]u8 = undefined;
-            const name = rel.setupName(&nb, repo, latest) orelse return c.fail("bad setup name for {s}", .{r.tag_name});
-            setup = (r.asset(name) orelse return c.fail("release {s} has no {s}", .{ r.tag_name, name })).browser_download_url;
+            const name = rel.setupName(&nb, repo, latest) orelse return c.fail(.failed, "bad setup name for {s}", .{r.tag_name});
+            setup = (r.asset(name) orelse return c.fail(.failed, "release {s} has no {s}", .{ r.tag_name, name })).browser_download_url;
             _ = try c.allowed(setup); // not fetched here, but the app hands it back to `install`
             hex = try c.sums(r, name);
         }
@@ -207,7 +239,7 @@ const Ctx = struct {
     fn install(c: *Ctx, args: []const []const u8) !void {
         const relaunch = opt(args, "--relaunch");
         const pid_s = try c.need(args, "--wait-pid");
-        const pid = std.fmt.parseInt(u32, pid_s, 10) catch return c.fail("bad --wait-pid {s}", .{pid_s});
+        const pid = std.fmt.parseInt(u32, pid_s, 10) catch return c.fail(.failed, "bad --wait-pid {s}", .{pid_s});
         c.installSteps(args, pid, relaunch) catch |err| {
             // The app usually quit right after starting us: bring it back instead of leaving the user with nothing.
             if (relaunch) |exe| if (!processRunning(pid)) c.launch(exe);
@@ -218,50 +250,50 @@ const Ctx = struct {
     fn installSteps(c: *Ctx, args: []const []const u8, pid: u32, relaunch: ?[]const u8) !void {
         const repo = try c.need(args, "--repo");
         const tag = try c.need(args, "--tag");
-        if (!rel.validRepo(repo)) return c.fail("bad --repo {s}", .{repo});
-        if (!rel.safeSegment(tag) or rel.Version.parse(tag) == null) return c.fail("bad --tag {s}", .{tag});
+        if (!rel.validRepo(repo)) return c.fail(.failed, "bad --repo {s}", .{repo});
+        if (!rel.safeSegment(tag) or rel.Version.parse(tag) == null) return c.fail(.failed, "bad --tag {s}", .{tag});
         c.log("install {s} {s} (wait pid {d})", .{ repo, tag, pid });
         if (relaunch) |exe| {
-            if (!fspath.isAbsolute(exe)) return c.fail("--relaunch must be an absolute path", .{});
+            if (!fspath.isAbsolute(exe)) return c.fail(.failed, "--relaunch must be an absolute path", .{});
             const dat = try fspath.join(c.arena, &.{ fspath.dirname(exe) orelse ".", "portable.dat" });
-            if (Io.Dir.cwd().access(c.io, dat, .{})) |_| return c.fail("portable copy: no installer, open the release page", .{}) else |_| {}
+            if (Io.Dir.cwd().access(c.io, dat, .{})) |_| return c.fail(.portable, "portable copy: no installer, open the release page", .{}) else |_| {}
         }
 
         const api = try c.begin(args);
         const r = try c.release(api, repo, try c.arena.print("tags/{s}", .{tag}));
         // only the release that was asked for (and checked by the app); r.tag_name is never used for paths
-        if (!std.mem.eql(u8, r.tag_name, tag)) return c.fail("asked for {s}, the server answered with release {s}", .{ tag, r.tag_name });
+        if (!std.mem.eql(u8, r.tag_name, tag)) return c.fail(.failed, "asked for {s}, the server answered with release {s}", .{ tag, r.tag_name });
         var nb: [256]u8 = undefined;
-        const name = rel.setupName(&nb, repo, rel.tagVersion(tag)) orelse return c.fail("bad setup name for {s}", .{tag});
-        const asset = r.asset(name) orelse return c.fail("release {s} has no {s}", .{ r.tag_name, name });
+        const name = rel.setupName(&nb, repo, rel.tagVersion(tag)) orelse return c.fail(.failed, "bad setup name for {s}", .{tag});
+        const asset = r.asset(name) orelse return c.fail(.failed, "release {s} has no {s}", .{ r.tag_name, name });
         const want = try c.sums(r, name);
 
         // Download into %TEMP%\MakeUpdate-<random>, removed on every way out.
-        const tmp = c.env.get("TEMP") orelse c.env.get("TMP") orelse return c.fail("TEMP is not set", .{});
+        const tmp = c.env.get("TEMP") orelse c.env.get("TMP") orelse return c.fail(.disk, "TEMP is not set", .{});
         var rnd: [6]u8 = undefined;
         c.io.random(&rnd);
         const work = try fspath.join(c.arena, &.{ tmp, try c.arena.print("MakeUpdate-{x}", .{&rnd}) });
         const cwd = Io.Dir.cwd();
-        cwd.createDirPath(c.io, work) catch |e| return c.fail("cannot create {s}: {t}", .{ work, e });
+        cwd.createDirPath(c.io, work) catch |e| return c.fail(.disk, "cannot create {s}: {t}", .{ work, e });
         defer cwd.deleteTree(c.io, work) catch {};
         const setup = try fspath.join(c.arena, &.{ work, name });
         var hasher: Sha256 = .init(.{});
         {
-            var file = cwd.createFile(c.io, setup, .{}) catch |e| return c.fail("cannot write {s}: {t}", .{ setup, e });
+            var file = cwd.createFile(c.io, setup, .{}) catch |e| return c.fail(.disk, "cannot write {s}: {t}", .{ setup, e });
             defer file.close(c.io);
             var fbuf: [64 * 1024]u8 = undefined;
             var fw = file.writer(c.io, &fbuf);
             try c.fetch(asset.browser_download_url, false, &fw.interface, 256 << 20, &hasher); // setups are a few MB
-            fw.interface.flush() catch |e| return c.fail("cannot write {s}: {t}", .{ setup, e });
+            fw.interface.flush() catch |e| return c.fail(.disk, "cannot write {s}: {t}", .{ setup, e });
         }
         const got = std.fmt.bytesToHex(hasher.finalResult(), .lower);
-        if (!std.mem.eql(u8, &got, &want)) return c.fail("SHA-256 mismatch for {s}: got {s}, SHA256SUMS.txt says {s}", .{ name, &got, &want });
+        if (!std.mem.eql(u8, &got, &want)) return c.fail(.damaged, "SHA-256 mismatch for {s}: got {s}, SHA256SUMS.txt says {s}", .{ name, &got, &want });
         c.log("downloaded {s}, SHA-256 ok", .{name});
 
         // Wait for the app to exit.
         if (OpenProcess(SYNCHRONIZE, .FALSE, pid)) |h| {
             defer _ = CloseHandle(h);
-            if (WaitForSingleObject(h, wait_ms) != 0) return c.fail("the app (pid {d}) did not exit within 60 s", .{pid});
+            if (WaitForSingleObject(h, wait_ms) != 0) return c.fail(.app_running, "the app (pid {d}) did not exit within 60 s", .{pid});
         }
 
         // Inno's /CLOSEAPPLICATIONS would try to close us (MakeUpdate.exe lives in the app folder and gets
@@ -283,13 +315,13 @@ const Ctx = struct {
             .stdout = .ignore,
             .stderr = .ignore,
             .create_no_window = true,
-        }) catch |e| return c.fail("cannot start {s}: {t}", .{ name, e });
-        const term = child.wait(c.io) catch |e| return c.fail("waiting for {s}: {t}", .{ name, e });
+        }) catch |e| return c.fail(.install_failed, "cannot start {s}: {t}", .{ name, e });
+        const term = child.wait(c.io) catch |e| return c.fail(.install_failed, "waiting for {s}: {t}", .{ name, e });
         const code: u32 = switch (term) {
             .exited => |x| x,
             else => 255,
         };
-        if (code != 0) return c.fail("{s} exited with code {d}", .{ name, code });
+        if (code != 0) return c.fail(.install_failed, "{s} exited with code {d}", .{ name, code });
         c.log("setup done", .{});
         if (relaunch) |exe| c.launch(exe);
         c.emit(.{ .ok = true, .tag = r.tag_name });
@@ -326,7 +358,7 @@ const Ctx = struct {
     fn fetch(c: *Ctx, url: []const u8, api: bool, out: *Io.Writer, limit: u64, hasher: ?*Sha256) !void {
         var next = url;
         for (0..6) |_| next = try c.fetchOnce(next, api, out, limit, hasher) orelse return;
-        return c.fail("too many redirects from {s}", .{url});
+        return c.fail(.failed, "too many redirects from {s}", .{url});
     }
 
     /// One request: returns the Location of a redirect, or null once the 200 body is in `out`.
@@ -349,13 +381,13 @@ const Ctx = struct {
                 var loc: [4096]u16 = undefined;
                 len = @sizeOf(@TypeOf(loc));
                 if (!WinHttpQueryHeaders(req, WINHTTP_QUERY_LOCATION, null, &loc, &len, null).toBool())
-                    return c.fail("HTTP {d} without Location from {s}", .{ status, url });
-                const to = std.unicode.utf16LeToUtf8Alloc(c.arena, loc[0 .. len / 2]) catch return c.fail("bad Location from {s}", .{url});
+                    return c.fail(.failed, "HTTP {d} without Location from {s}", .{ status, url });
+                const to = std.unicode.utf16LeToUtf8Alloc(c.arena, loc[0 .. len / 2]) catch return c.fail(.failed, "bad Location from {s}", .{url});
                 // ponytail: absolute or "/path" Location; a "path" relative to the directory fails in crack().
                 if (!std.mem.startsWith(u8, to, "/") or std.mem.startsWith(u8, to, "//")) return to;
                 return try c.arena.print("{s}://{s}:{d}{s}", .{ if (u.https) "https" else "http", u.host, u.port, to });
             },
-            else => return c.fail("HTTP {d} from {s}", .{ status, url }),
+            else => return c.fail(.failed, "HTTP {d} from {s}", .{ status, url }),
         }
 
         var buf: [64 * 1024]u8 = undefined;
@@ -365,9 +397,9 @@ const Ctx = struct {
             if (!WinHttpReadData(req, &buf, buf.len, &n).toBool()) return c.netFail(url);
             if (n == 0) break;
             total += n;
-            if (total > limit) return c.fail("{s} is larger than {d} bytes", .{ url, limit });
+            if (total > limit) return c.fail(.failed, "{s} is larger than {d} bytes", .{ url, limit });
             if (hasher) |h| h.update(buf[0..n]);
-            out.writeAll(buf[0..n]) catch return c.fail("cannot store {s}", .{url});
+            out.writeAll(buf[0..n]) catch return c.fail(.disk, "cannot store {s}", .{url});
         }
         return null;
     }
@@ -375,8 +407,8 @@ const Ctx = struct {
     fn netFail(c: *Ctx, url: []const u8) error{Failed} {
         const code = GetLastError();
         return switch (code) {
-            12002, 12007, 12029 => c.fail("no connection ({d}: {s})", .{ code, url }), // timeout, name not resolved, cannot connect
-            else => c.fail("network error {d}: {s}", .{ code, url }),
+            12002, 12007, 12029 => c.fail(.offline, "no connection ({d}: {s})", .{ code, url }), // timeout, name not resolved, cannot connect
+            else => c.fail(.failed, "network error {d}: {s}", .{ code, url }),
         };
     }
 };

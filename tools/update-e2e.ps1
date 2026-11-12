@@ -128,31 +128,33 @@ try {
     Check ($r.J.ok -and $r.J.newer) 'MAKEKIT_UPDATE_API overrides the API base'
     Set-TestEnv 'MAKEKIT_UPDATE_API' $null
     $r = Invoke-Updater $updater @('check', '--repo', 'MakeMD/Demo', '--current', '1.0.0')
-    Check ($r.Code -eq 1 -and -not $r.J.ok -and $r.J.error -like '*MAKEKIT_NO_UPDATE*') "MAKEKIT_NO_UPDATE=1 refuses the real API ($($r.J.error))"
+    Check ($r.Code -eq 1 -and -not $r.J.ok -and $r.J.detail -like '*MAKEKIT_NO_UPDATE*') "MAKEKIT_NO_UPDATE=1 refuses the real API ($($r.J.detail))"
     $l = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, 0); $l.Start(); $dead = $l.LocalEndpoint.Port; $l.Stop()
     $r = Invoke-Updater $updater @('check', '--repo', 'MakeMD/Demo', '--current', '1.0.0', '--api-base', "http://127.0.0.1:$dead")
-    Check ($r.Code -eq 1 -and $r.J.error -like 'no connection*') "offline -> ok:false ($($r.J.error))"
+    Check ($r.Code -eq 1 -and $r.J.detail -like 'no connection*') "offline -> ok:false ($($r.J.detail))"
+    Check ($r.J.reason -eq 'offline' -and $r.J.error -eq 'No internet connection.') "offline -> plain text for the user ($($r.J.error))"
     $r = Invoke-Updater $updater @('check', '--repo', 'MakeMD/Nope', '--current', '1.0.0', '--api-base', $base)
-    Check ($r.Code -eq 1 -and $r.J.error -like 'HTTP 404*') "unknown repo -> HTTP 404 ($($r.J.error))"
+    Check ($r.Code -eq 1 -and $r.J.detail -like 'HTTP 404*') "unknown repo -> HTTP 404 ($($r.J.detail))"
+    Check ($r.J.reason -eq 'failed' -and $r.J.error -eq 'Could not check for updates. Try again later.') "server problem -> plain text ($($r.J.error))"
     $r = Invoke-Updater $updater @('check', '--repo', 'MakeMD/../x', '--current', '1.0.0', '--api-base', $base)
-    Check ($r.Code -eq 1 -and $r.J.error -like 'bad --repo*') 'repo with path tricks rejected'
+    Check ($r.Code -eq 1 -and $r.J.detail -like 'bad --repo*') 'repo with path tricks rejected'
     $r = Invoke-Updater $updater @('check', '--repo', 'MakeMD/EvilSetup', '--current', '1.0.0', '--api-base', $base)
-    Check ($r.Code -eq 1 -and $r.J.error -like 'refusing host evil.invalid*') "setup on a foreign host refused ($($r.J.error))"
+    Check ($r.Code -eq 1 -and $r.J.detail -like 'refusing host evil.invalid*') "setup on a foreign host refused ($($r.J.detail))"
     $r = Invoke-Updater $updater @('check', '--repo', 'MakeMD/EvilSums', '--current', '1.0.0', '--api-base', $base)
-    Check ($r.Code -eq 1 -and $r.J.error -like 'refusing host localhost*') "SHA256SUMS.txt on a foreign host refused ($($r.J.error))"
+    Check ($r.Code -eq 1 -and $r.J.detail -like 'refusing host localhost*') "SHA256SUMS.txt on a foreign host refused ($($r.J.detail))"
     $r = Invoke-Updater $updater @('check', '--repo', 'MakeMD/Redir', '--current', '1.0.0', '--api-base', $base)
     Check ($r.Code -eq 0 -and $r.J.sha256 -eq $hash.ToLower()) "same-host redirect followed ($($r.Raw))"
     $r = Invoke-Updater $updater @('check', '--repo', 'MakeMD/Hop', '--current', '1.0.0', '--api-base', $base)
-    Check ($r.Code -eq 1 -and $r.J.error -like 'refusing host localhost*') "redirect to a foreign host refused ($($r.J.error))"
+    Check ($r.Code -eq 1 -and $r.J.detail -like 'refusing host localhost*') "redirect to a foreign host refused ($($r.J.detail))"
     $null = New-Item -ItemType Directory -Force -Path "$srv\repos\MakeMD\Trav\releases", "$srv\repos\MakeMD\Page\releases"
     Write-Utf8 "$srv\repos\MakeMD\Trav\releases\latest" ('{"tag_name":"v1.2.0-a/../../pwned","html_url":"' + $base + '/p","assets":[' +
         '{"name":"Trav-Setup-1.2.0-a/../../pwned.exe","browser_download_url":"' + $base + '/dl/Demo-Setup-1.2.0.exe"},' +
         '{"name":"SHA256SUMS.txt","browser_download_url":"' + $base + '/dl/SHA256SUMS.txt"}]}')
     $r = Invoke-Updater $updater @('check', '--repo', 'MakeMD/Trav', '--current', '1.0.0', '--api-base', $base)
-    Check ($r.Code -eq 1 -and $r.J.error -like 'bad tag_name*') "tag_name with a path refused ($($r.J.error))"
+    Check ($r.Code -eq 1 -and $r.J.detail -like 'bad tag_name*') "tag_name with a path refused ($($r.J.detail))"
     Write-Utf8 "$srv\repos\MakeMD\Page\releases\latest" $rel.Replace("$base/MakeMD/Demo/releases/tag/v1.2.0", 'http://evil.invalid/p')
     $r = Invoke-Updater $updater @('check', '--repo', 'MakeMD/Page', '--current', '1.2.0', '--api-base', $base)
-    Check ($r.Code -eq 1 -and $r.J.error -like 'refusing host evil.invalid*') "release page on a foreign host refused ($($r.J.error))"
+    Check ($r.Code -eq 1 -and $r.J.detail -like 'refusing host evil.invalid*') "release page on a foreign host refused ($($r.J.detail))"
 
     Write-Host 'install:'
     Copy-Item $updater "$app\MakeUpdate.exe"
@@ -184,7 +186,8 @@ try {
     [IO.File]::AppendAllText("$srv\dl\Demo-Setup-1.2.0.exe", 'x')
     $dummy2 = Start-Dummy 20
     $r = Invoke-Updater "$app\MakeUpdate.exe" @('install', '--repo', 'MakeMD/Demo', '--tag', 'v1.2.0', '--wait-pid', "$($dummy2.Id)", '--relaunch', "$app\DemoApp.exe", '--api-base', $base)
-    Check ($r.Code -eq 1 -and $r.J.error -like 'SHA-256 mismatch*') "sha mismatch -> exit 1 ($($r.J.error))"
+    Check ($r.Code -eq 1 -and $r.J.detail -like 'SHA-256 mismatch*') "sha mismatch -> exit 1 ($($r.J.detail))"
+    Check ($r.J.reason -eq 'damaged' -and $r.J.error -like 'The downloaded file is damaged*') "damaged -> plain text ($($r.J.error))"
     Check (-not $dummy2.HasExited) 'did not wait for the app'
     Start-Sleep -Milliseconds 500
     Check (@(Get-ChildItem $marks).Count -eq 0) 'nothing run (no setup, app still running -> no relaunch)'
@@ -199,13 +202,14 @@ try {
     Remove-Item "$marks\*"
     Write-Utf8 "$app\portable.dat" ''
     $r = Invoke-Updater "$app\MakeUpdate.exe" @('install', '--repo', 'MakeMD/Demo', '--tag', 'v1.2.0', '--wait-pid', '4294967294', '--relaunch', "$app\DemoApp.exe", '--api-base', $base)
-    Check ($r.Code -eq 1 -and $r.J.error -like 'portable*' -and -not (Test-Path $setupMark)) 'portable copy never installs'
+    Check ($r.Code -eq 1 -and $r.J.detail -like 'portable*' -and -not (Test-Path $setupMark)) 'portable copy never installs'
+    Check ($r.J.reason -eq 'portable') 'portable -> reason portable'
     Remove-Item "$app\portable.dat"
 
     Write-Host 'other release than asked for:'
     Write-Utf8 "$srv\repos\MakeMD\Demo\releases\tags\v1.3.0" $rel   # answers v1.2.0
     $r = Invoke-Updater "$app\MakeUpdate.exe" @('install', '--repo', 'MakeMD/Demo', '--tag', 'v1.3.0', '--wait-pid', '4294967294', '--api-base', $base)
-    Check ($r.Code -eq 1 -and $r.J.error -like 'asked for v1.3.0*' -and -not (Test-Path $setupMark)) "served tag must equal --tag ($($r.J.error))"
+    Check ($r.Code -eq 1 -and $r.J.detail -like 'asked for v1.3.0*' -and -not (Test-Path $setupMark)) "served tag must equal --tag ($($r.J.detail))"
 
     if (-not $NoGui) {
         Write-Host 'demo banner (kit.update.Checker + banner over the automation pipe, DISPLAY1):'

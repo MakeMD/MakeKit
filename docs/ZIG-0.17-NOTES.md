@@ -1224,7 +1224,8 @@ buttons) ?usize` / `messageBoxEx(..., .{ .width = 480 })` (Enter = 0, Esc = last
 `<button>##msgButton<i>`; no close X on purpose: Esc = last button; kinds `.info/.question/.warning/.err/.danger`, picture
 `msgIcon(kind)` (err/danger = the red `.danger` triangle), button 0 = primary, for `.danger` (destructive confirm) a
 danger-filled button), `progressStrip(id, status, done, total,
-can_cancel) bool` (items `##status`, `##percent`, `Cancel##cancel`; `total == 0` = indeterminate),
+can_cancel) bool` (items `##status`, `##percent`, `Cancel##cancel`; `total == 0` = indeterminate; a translated app
+passes its words: `progressStripEx(..., .{ .cancel = "...", .count = "{0}% ({1} of {2})" })`),
 `iconButton(id, name, size, ?label) bool` (ImGui label `<label>##<id>`; tooltip: `ImGui_SetItemTooltip` after),
 `icon(name, size)`, `iconTinted(name, size, 0xRRGGBB)`, `primaryButton(label)` / `primaryButtonEx(label, size)`,
 `dangerButtonEx(label, size)` (both fall back to a plain dimmed button inside `BeginDisabled`). Checkboxes: soft
@@ -1388,7 +1389,7 @@ API (`src/i18n.zig`):
   U+00A0): format numbers in the UI language, not the Windows locale (e.g. sizes "1,5 MB" in de).
 - `check(T, base: *const T, t: *const T, Lang) ?[]const u8` (for app tests): first bad field name: empty string,
   plural forms not exactly the language's set, or `{N}` set different from English; walks nested structs.
-- `combo(label, auto_label, pref: *?Lang) bool`: "Auto (system)" + the six own names; on change sets `pref`, calls
+- `combo(label, auto_label, pref: *?Lang) bool`: "Auto" + the six own names; on change sets `pref`, calls
   `apply` (next frame draws the new language: no restart) and returns true -> save settings. Automation: items
   `<name>##lang_<code>`, `<auto_label>##lang_auto`; `auto_label` comes translated from the app.
 - Never translate persisted keys (ini/registry/JSON names, CLI switches): keep a stable key, map it to a `tr()`
@@ -1422,14 +1423,17 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
-CLI (one JSON line on stdout; exit 0 = `"ok":true`, 1 = `{"ok":false,"error":"..."}`):
+CLI (one JSON line on stdout; exit 0 = `"ok":true`, 1 = `{"ok":false,"reason":"..","error":"..","detail":".."}`:
+`error` = a plain English sentence ("No internet connection."), `reason` = `offline` / `failed` / `disk` / `damaged` /
+`app_running` / `install_failed` / `portable` / `disabled` (a translated app shows its own text for it), `detail` =
+the technical cause, for logs only):
 
 - `MakeUpdate check --repo MakeMD/App --current 2.0.0 [--api-base URL]` -> `{"ok":true,"newer":true,"latest":"2.1.0",
   "tag":"v2.1.0","notes":"<body, max 4000 B>","setup":"<url of App-Setup-2.1.0.exe>","sha256":"<hex>","page":"<html_url>"}`.
   Reads `/repos/<repo>/releases/latest` (GitHub skips drafts and pre-releases; a draft/pre-release answer is
   an error anyway); semver x.y.z compare (`-rc` sorts lower); `setup`/`sha256` only when newer, the hash
   from the release asset `SHA256SUMS.txt` (sha256sum or Get-FileHash format, any case, BOM/CRLF ok).
-  Offline = `"error":"no connection (12007|12029|12002: url)"`: never alert on a background check.
+  Offline = `"reason":"offline"` (`detail` "no connection (12007|12029|12002: url)"): never alert on a background check.
 - `MakeUpdate install --repo MakeMD/App --tag v2.1.0 --wait-pid <app pid> --relaunch <app exe> [--api-base URL]`:
   `/releases/tags/<tag>` -> downloads `App-Setup-2.1.0.exe` + `SHA256SUMS.txt` into `%TEMP%\MakeUpdate-<random>`,
   SHA-256 mismatch = abort (nothing run), waits for the PID (60 s), moves its own running exe aside
@@ -1439,7 +1443,7 @@ CLI (one JSON line on stdout; exit 0 = `"ok":true`, 1 = `{"ok":false,"error":"..
   failure after the app has exited it starts the app again. `portable.dat` next to `--relaunch` = refused.
 - Hosts: every URL (setup and `SHA256SUMS.txt` in `check` and `install`, and each redirect hop) must be on
   the API host or `github.com` / `objects.githubusercontent.com` / `release-assets.githubusercontent.com`,
-  else `"error":"refusing host <h> (<url>)"`. WinHTTP auto-redirects are off (REDIRECT_POLICY_NEVER);
+  else `"detail":"refusing host <h> (<url>)"`. WinHTTP auto-redirects are off (REDIRECT_POLICY_NEVER);
   MakeUpdate follows up to 5 hops itself (absolute or `/path` Location).
 - Log: `%LOCALAPPDATA%\MakeUpdate\update.log` (one line per step, kept under 256 KB).
 - Env: `MAKEKIT_UPDATE_API` = API base (tests; plain `http://` is accepted only with an overridden base);
